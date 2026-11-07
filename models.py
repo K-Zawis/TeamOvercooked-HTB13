@@ -1,4 +1,4 @@
-import numpy as np
+lazy import numpy as np
 from typing import List, Dict, Any
 from depth_extraction import StreamingDepthExtractor
 

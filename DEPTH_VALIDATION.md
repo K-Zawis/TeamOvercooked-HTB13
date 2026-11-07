@@ -4,7 +4,7 @@
 
 Tested with Python 3.13.12, Tesseract 5.5.4 and English tessdata 4.1.0, NumPy 2.5.4, Pillow 13.0.0, rasterio 1.5.2, and pytest 9.2.0. OCR ran locally with one OpenMP thread per call. Temporary dependencies were installed outside the repository.
 
-The original extraction-only suite had **38 passing tests**, including actual Tesseract on a rendered scale streamed at heights 71, 200, and 600. Tests also cover numerical parsing, rotations, seam recovery, pending anchors, conflicting readings, state rollback, interpolation limits, resets, and a 75-strip bounded-state stream. The expanded suite including Redis-branch integration now has **122 passing tests** in total.
+The original extraction-only suite had **38 passing tests**, including actual Tesseract on a rendered scale streamed at heights 71, 200, and 600. Tests also cover numerical parsing, rotations, seam recovery, pending anchors, conflicting readings, state rollback, interpolation limits, resets, and a 75-strip bounded-state stream. The current uv/Python 3.15 suite has **129 passing tests** in total.
 
 ## Selected full-column runs
 
@@ -50,10 +50,10 @@ Visual inspection of these crops shows competing printed numeric series, abbrevi
 ## Reproduce and integration limits
 
 ```bash
-python -m pip install -r requirements-validation.txt
-python -m pytest -q
-python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
-python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-smoke.json
+uv sync --locked
+uv run --locked pytest -q
+uv run --locked python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
+uv run --locked python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-smoke.json
 ```
 
 Tesseract and English language data must also be installed. The JSON reports include emitted anchors, missed reviewed labels, timing, and retained candidate counts. Use `--tesseract` for a custom executable. Timings are observations, not a controlled benchmark.
@@ -152,3 +152,33 @@ share a filename prefix. Full filename stems are now document IDs.
 Docker daemon access is denied in this environment, including outside the
 sandbox. Real-server persistence/failover remains untested. Existing TIFF/OCR
 regressions pass; `worker.py` remains unchanged.
+
+## uv and Python 3.15 migration
+
+Dependencies now live in `pyproject.toml` with validation tools in the `dev`
+group. `.python-version` selects 3.15; `uv.lock` pins the resolved packages. The
+requirements files are generated pip-compatible exports of the lockfile.
+`uv lock --check` and `uv sync --locked` succeed with uv 0.13.7 and CPython
+3.15.2. PyYAML 6.0.3, numcodecs 0.17.1, and
+lupa 2.8 built successfully from source for this interpreter.
+
+`uv run --locked pytest -q` reports **129 passed**, with actual Tesseract enabled.
+This includes the TIFF decoding, Redis/Lua staging, and dispatcher/worker
+regressions. Seven new subprocess tests confirm that importing pipeline modules
+or displaying worker/validator CLI help leaves NumPy, Pillow, tifffile, Zarr,
+imagecodecs, and redis-py unloaded. Selected heavy imports now use Python 3.15's
+explicit `lazy import` syntax; third-party package internals are not globally
+forced into lazy mode.
+
+A separate temporary environment installed using `uv sync --locked --no-dev`
+successfully imported the worker and displayed its CLI help with pytest and
+rasterio absent. These checks validate the interpreter and dependency migration;
+the earlier full-column dataset accuracy measurements remain historical results
+from Python 3.13. `worker.py` remains unchanged.
+
+Pip compatibility is retained through generated `requirements.txt` (runtime)
+and `requirements-validation.txt` (runtime plus development dependencies).
+`python tools/sync_requirements.py --check` confirms both exports match the
+manifest and lock; a dry-run installation of the validation export reports no
+changes against the tested environment. Dependency changes should update
+`pyproject.toml`, run `uv lock`, then run `python tools/sync_requirements.py`.

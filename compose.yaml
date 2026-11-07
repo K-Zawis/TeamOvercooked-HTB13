@@ -35,7 +35,7 @@ services:
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: python -m src.dispatcher
+  #   command: uv run --locked --no-dev python -m src.dispatcher
   #   profiles: ["app"]
 
 volumes:

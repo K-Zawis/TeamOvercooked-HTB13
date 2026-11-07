@@ -15,11 +15,11 @@ import socket
 import time
 import uuid
 
-import numpy as np
-import tifffile
-import zarr
+lazy import numpy as np
+lazy import tifffile
+lazy import zarr
 
-from models import DepthExtractor
+lazy from models import DepthExtractor
 from depth_staging import commit_depth_result, staging_keys
 from redis_stub import RedisClient, StubRedisClient
 from src.redis_client import PipelineRedisClient
