@@ -55,6 +55,31 @@ def test_numeric_parser(text, value):
     assert _number(text) == value
 
 
+def test_independent_observations_emit_one_or_two_labels_immediately():
+    extractor = DepthExtractor(ScriptedOCR([token(50, 1000)],
+                                           [token(100, 2000), token(200, 2100)]))
+    assert extractor.extract_observations(strip()) == {"y_to_depth_map": {50: 1000}}
+    assert extractor.extract_observations(strip(300)) == {"y_to_depth_map": {100: 2000, 200: 2100}}
+    assert extractor._offset == 0 and extractor._tail is None
+    assert extractor._candidates == [] and extractor.depth_at(100) is None
+
+
+def test_observations_preserve_existing_legacy_calibration():
+    extractor = DepthExtractor(ScriptedOCR(
+        [token(50, 100), token(150, 200), token(250, 300)], [token(75, 999)]))
+    extractor.extract(strip())
+    old_tail = extractor._tail.copy()
+    assert extractor.extract_observations(strip(200, 60)) == {"y_to_depth_map": {75: 999}}
+    assert extractor._offset == 400 and extractor._width == 80
+    assert extractor.depth_at(100) == 150
+    np.testing.assert_array_equal(extractor._tail, old_tail)
+
+
+def test_observations_do_not_truncate_large_task_results():
+    extractor = DepthExtractor(ScriptedOCR([token(y, y) for y in range(20, 3020, 10)]))
+    assert len(extractor.extract_observations(strip(3100))["y_to_depth_map"]) == 300
+
+
 def test_sparse_anchors_and_piecewise_interpolation():
     extractor = DepthExtractor(
         ScriptedOCR(
