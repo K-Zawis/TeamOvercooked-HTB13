@@ -55,6 +55,29 @@ class FeatureWindow:
 
 
 @dataclass(frozen=True)
+class TextToken:
+    """Recognized text and its max-exclusive box in crop-local coordinates."""
+
+    text: str
+    confidence: float
+    box: tuple[int, int, int, int]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text.strip():
+            raise ValueError("token text must be a nonempty string")
+        if not math.isfinite(self.confidence) or not 0 <= self.confidence <= 1:
+            raise ValueError("token confidence must be finite and in [0, 1]")
+        if not isinstance(self.box, tuple) or len(self.box) != 4:
+            raise ValueError("token box must be an (x0, y0, x1, y1) tuple")
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in self.box):
+            raise ValueError("token coordinates must be integers")
+        left, top, right, bottom = self.box
+        if left < 0 or top < 0 or right <= left or bottom <= top:
+            raise ValueError("token box must be a positive max-exclusive range")
+        object.__setattr__(self, "text", self.text.strip())
+
+
+@dataclass(frozen=True)
 class LegendPattern:
     """A named legend swatch represented in the shared feature space."""
 

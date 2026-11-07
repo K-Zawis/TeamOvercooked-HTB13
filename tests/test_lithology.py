@@ -5,9 +5,14 @@ from src.lithology import (
     LegendPattern,
     analyze_lithology,
     build_legend,
+    build_legend_from_boxes,
     classify_features,
     compute_feature_map,
     compute_features,
+    find_swatch_boxes,
+    match_labels,
+    read_legend,
+    TextToken,
 )
 
 
@@ -43,6 +48,69 @@ def test_build_legend_preserves_names_and_computes_shared_features():
                for item in patterns)
     with pytest.raises(ValueError):
         build_legend({})
+
+
+def test_find_and_extract_framed_legend_swatches():
+    image = np.full((100, 150, 3), 255, np.uint8)
+    boxes = [(10, 10, 50, 40), (80, 10, 120, 40), (10, 60, 50, 90)]
+    patterns = ["horizontal", "vertical", "checker"]
+    for box, name in zip(boxes, patterns):
+        left, top, right, bottom = box
+        image[top:bottom, left] = 0
+        image[top:bottom, right - 1] = 0
+        image[top, left:right] = 0
+        image[bottom - 1, left:right] = 0
+        image[top + 2:bottom - 2, left + 2:right - 2] = pattern(
+            name, bottom - top - 4, right - left - 4
+        )
+    assert find_swatch_boxes(image) == tuple(boxes)
+
+    named = build_legend_from_boxes(
+        image,
+        {name: box for name, box in zip(patterns, boxes)},
+    )
+    assert [item.name for item in named] == patterns
+    assert all(np.linalg.norm(item.features.combined) == pytest.approx(1)
+               for item in named)
+
+
+def test_match_labels_combines_words_and_associates_nearest_swatch():
+    boxes = [(10, 10, 50, 40), (80, 10, 120, 40)]
+    tokens = [
+        TextToken("Silty", 0.9, (7, 44, 27, 53)),
+        TextToken("sandstone", 0.8, (29, 44, 66, 53)),
+        TextToken("Shale", 0.95, (84, 44, 116, 53)),
+        TextToken("HEADING", 0.99, (20, 0, 80, 8)),
+    ]
+    assert match_labels(boxes, tokens) == {
+        "Silty sandstone": boxes[0],
+        "Shale": boxes[1],
+    }
+
+
+def test_read_legend_composes_detection_ocr_and_features():
+    image = np.full((70, 130, 3), 255, np.uint8)
+    boxes = [(10, 5, 50, 35), (75, 5, 115, 35)]
+    for box, name in zip(boxes, ("horizontal", "vertical")):
+        left, top, right, bottom = box
+        image[top:bottom, left] = 0
+        image[top:bottom, right - 1] = 0
+        image[top, left:right] = 0
+        image[bottom - 1, left:right] = 0
+        image[top + 2:bottom - 2, left + 2:right - 2] = pattern(
+            name, bottom - top - 4, right - left - 4
+        )
+
+    class Recognizer:
+        def recognize(self, pixels):
+            assert pixels is image
+            return [
+                TextToken("Shale", 0.9, (15, 40, 46, 49)),
+                TextToken("Sandstone", 0.9, (69, 40, 120, 49)),
+            ]
+
+    result = read_legend(image, Recognizer())
+    assert [item.name for item in result] == ["Shale", "Sandstone"]
 
 
 def test_features_are_normalized_and_serializable():
