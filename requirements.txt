@@ -1,0 +1,6 @@
+tifffile
+imagecodecs
+zarr
+numpy
+redis
+psutil

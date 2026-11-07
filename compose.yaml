@@ -1,0 +1,42 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: well_log_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # dispatcher:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: well_log_dispatcher
+  #   environment:
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - SLICE_HEIGHT=2000
+  #     - DATA_DIR=/data
+  #     - OUTPUT_DIR=/output
+  #   volumes:
+  #     - ./dataset:/data:ro
+  #     - ./output:/output
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   command: python -m src.dispatcher
+  #   profiles: ["app"]
+
+volumes:
+  redis_data:
