@@ -18,15 +18,68 @@ services:
       timeout: 3s
       retries: 5
 
-  # dispatcher:
+  dispatcher:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+    container_name: well_log_dispatcher
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SLICE_HEIGHT=2000
+      - DATA_DIR=/data
+      - OUTPUT_DIR=/output
+    volumes:
+      - ./dataset:/data:ro
+      - ./output:/output
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: python -m src.dispatcher
+    profiles: ["app"]
+
+  # worker-depth:
   #   build:
   #     context: .
   #     dockerfile: Dockerfile
-  #   container_name: well_log_dispatcher
   #   environment:
   #     - REDIS_HOST=redis
   #     - REDIS_PORT=6379
   #     - SLICE_HEIGHT=2000
+  #     - DATA_DIR=/data
+  #   volumes:
+  #     - ./dataset:/data:ro
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   command: python -m src.worker_depth
+  #   profiles: ["app"]
+
+  # worker-lithology:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - SLICE_HEIGHT=2000
+  #     - DATA_DIR=/data
+  #   volumes:
+  #     - ./dataset:/data:ro
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   command: python -m src.worker_lithology
+  #   profiles: ["app"]
+
+  # merger:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: well_log_merger
+  #   environment:
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
   #     - DATA_DIR=/data
   #     - OUTPUT_DIR=/output
   #   volumes:
@@ -35,7 +88,7 @@ services:
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: python -m src.dispatcher
+  #   command: python -m src.merger
   #   profiles: ["app"]
 
 volumes:

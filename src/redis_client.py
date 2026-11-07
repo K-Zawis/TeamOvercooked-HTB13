@@ -7,6 +7,8 @@ from typing import Optional, Tuple, Dict, Any, List
 
 
 class LogStatus(str, Enum):
+    """Lifecycle statuses for a geological well log document."""
+
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     MERGING = "MERGING"
@@ -15,10 +17,7 @@ class LogStatus(str, Enum):
 
 
 class PipelineRedisClient:
-    """
-    High-level Redis interface for task streaming, state tracking,
-    and intermediate result storage.
-    """
+    """High-level Redis interface for task streaming, state tracking, and intermediate ML result storage."""
 
     STREAM_DEPTH = "stream:depth_tasks"
     STREAM_LITH = "stream:lith_tasks"
@@ -29,22 +28,33 @@ class PipelineRedisClient:
     GROUP_MERGE = "group:merger"
 
     def __init__(
-        self, 
-        host: Optional[str] = None, 
-        port: Optional[int] = None, 
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
         db: int = 0,
     ) -> None:
+        """Initializes connection to the Redis server.
+
+        Args:
+            host (Optional[str], optional): Redis host address. Reads REDIS_HOST env if not provided. Defaults to None.
+            port (Optional[int], optional): Redis port number. Reads REDIS_PORT env if not provided. Defaults to None.
+            db (int, optional): Redis database index. Defaults to 0.
+        """
         self.host = host or os.getenv("REDIS_HOST", "localhost")
         self.port = int(port or os.getenv("REDIS_PORT", 6379))
         self.r = redis.Redis(
-            host=self.host, 
-            port=self.port, 
-            db=db, 
+            host=self.host,
+            port=self.port,
+            db=db,
             decode_responses=True,
         )
 
     def init_consumer_groups(self) -> None:
-        """Creates required Redis streams and consumer groups idempotently."""
+        """Creates required Redis streams and consumer groups idempotently.
+
+        Raises:
+            redis.exceptions.ResponseError: If stream creation fails with an unexpected error other than BUSYGROUP.
+        """
         mappings = [
             (self.STREAM_DEPTH, self.GROUP_DEPTH),
             (self.STREAM_LITH, self.GROUP_LITH),
@@ -52,15 +62,15 @@ class PipelineRedisClient:
         ]
         for stream, group in mappings:
             try:
-                # mkstream=True automatically creates stream if it doesn't exist
                 self.r.xgroup_create(stream, group, id="0", mkstream=True)
             except redis.exceptions.ResponseError as e:
                 if "BUSYGROUP" not in str(e):
                     raise e
 
     # -------------------------------------------------------------------------
-    # Stream Task Producers
+    #  TASK PRODUCERS (Used by Dispatcher & Barrier Engine)
     # -------------------------------------------------------------------------
+
     def push_depth_task(
         self,
         log_id: str,
@@ -69,7 +79,18 @@ class PipelineRedisClient:
         y_start: int,
         y_end: int,
     ) -> str:
-        """Pushes a depth OCR task with explicit typed parameters."""
+        """Enqueues an OCR task for a 2000px depth column slice.
+
+        Args:
+            log_id (str): Unique identifier for the well log document.
+            image_path (str | Path): Absolute or relative filesystem path to the TIFF image.
+            bbox (List[int]): Depth column bounding box in [x0, y0, x1, y1] format.
+            y_start (int): Top global pixel boundary of the slice.
+            y_end (int): Bottom global pixel boundary of the slice.
+
+        Returns:
+            str: Generated Redis stream entry ID.
+        """
         payload = {
             "log_id": log_id,
             "image_path": str(image_path),
@@ -88,7 +109,19 @@ class PipelineRedisClient:
         y_start: int,
         y_end: int,
     ) -> str:
-        """Pushes a lithology chunk task with explicit typed parameters."""
+        """Enqueues a lithology pattern segmentation and classification task for a slice.
+
+        Args:
+            log_id (str): Unique identifier for the well log document.
+            image_path (str | Path): Absolute or relative filesystem path to the TIFF image.
+            column_bbox (List[int]): Lithology column bounding box in [x0, y0, x1, y1] format.
+            legend_bbox (Optional[List[int]]): Legend column bounding box in [x0, y0, x1, y1] format, if available.
+            y_start (int): Top global pixel boundary of the slice.
+            y_end (int): Bottom global pixel boundary of the slice.
+
+        Returns:
+            str: Generated Redis stream entry ID.
+        """
         payload = {
             "log_id": log_id,
             "image_path": str(image_path),
@@ -105,7 +138,16 @@ class PipelineRedisClient:
         image_path: str | Path,
         column_bbox: Optional[List[int]] = None,
     ) -> str:
-        """Notifies the merger that all chunks for a log are dispatched/ready."""
+        """Enqueues a final reduction/merging task when all document slices finish processing.
+
+        Args:
+            log_id (str): Unique identifier for the well log document.
+            image_path (str | Path): Path to the source TIFF image.
+            column_bbox (Optional[List[int]], optional): Column bounding box required for annotated rendering. Defaults to None.
+
+        Returns:
+            str: Generated Redis stream entry ID.
+        """
         payload = {
             "log_id": log_id,
             "image_path": str(image_path),
@@ -114,16 +156,27 @@ class PipelineRedisClient:
         return self.r.xadd(self.STREAM_MERGE, {"data": json.dumps(payload)})
 
     # -------------------------------------------------------------------------
-    # Stream Task Consumers
+    #  TASK CONSUMERS (Used by Workers & Merger)
     # -------------------------------------------------------------------------
+
     def read_task(
-        self, stream: str, group: str, consumer_name: str, block_ms: int = 2000
+        self,
+        stream: str,
+        group: str,
+        consumer_name: str,
+        block_ms: int = 2000,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """Reads a single unacknowledged task from a Redis stream consumer group.
+
+        Args:
+            stream (str): Name of the stream to read from (e.g., PipelineRedisClient.STREAM_DEPTH).
+            group (str): Consumer group assigned to the stream.
+            consumer_name (str): Unique identifier for the calling worker instance.
+            block_ms (int, optional): Blocking timeout in milliseconds. Defaults to 2000.
+
+        Returns:
+            Optional[Tuple[str, Dict[str, Any]]]: Tuple of (message_id, parsed_payload_dict), or None if queue is empty.
         """
-        Reads one pending or new task from a consumer group.
-        Returns (message_id, parsed_payload_dict) or None if timeout.
-        """
-        # '>' means only deliver new messages never delivered to other consumers
         messages = self.r.xreadgroup(
             groupname=group,
             consumername=consumer_name,
@@ -143,12 +196,111 @@ class PipelineRedisClient:
         return msg_id, payload
 
     def ack_task(self, stream: str, group: str, msg_id: str) -> None:
-        """Confirms successful task completion to clear it from the PEL."""
+        """Confirms successful task processing to clear the message from the Pending Entries List (PEL).
+
+        Args:
+            stream (str): Stream where the task originated.
+            group (str): Consumer group that processed the task.
+            msg_id (str): Redis message identifier to acknowledge.
+        """
         self.r.xack(stream, group, msg_id)
 
     # -------------------------------------------------------------------------
-    # Document State & Progress Tracking
+    #  INTERMEDIATE ML DATA STORAGE & RETRIEVAL
     # -------------------------------------------------------------------------
+
+    def save_depth_points(self, log_id: str, y_to_depth_map: Dict[int, float]) -> None:
+        """Stores detected OCR depth numbers mapped to their global vertical pixel positions.
+
+        Args:
+            log_id (str): Target well log identifier.
+            y_to_depth_map (Dict[int, float]): Dictionary mapping global Y pixel coordinates to measured depth values.
+        """
+        if y_to_depth_map:
+            str_map = {str(k): str(v) for k, v in y_to_depth_map.items()}
+            self.r.hset(f"log:{log_id}:depths", mapping=str_map)
+
+    def get_depth_points(self, log_id: str) -> Dict[int, float]:
+        """Retrieves all detected depth-to-pixel coordinate mappings, sorted by ascending pixel position.
+
+        Args:
+            log_id (str): Target well log identifier.
+
+        Returns:
+            Dict[int, float]: Ordered mapping of global Y pixel coordinates to measured depth values.
+        """
+        raw_map = self.r.hgetall(f"log:{log_id}:depths")
+        if not raw_map:
+            return {}
+        return {
+            int(k): float(v)
+            for k, v in sorted(raw_map.items(), key=lambda item: int(item[0]))
+        }
+
+    def append_raw_interval(self, log_id: str, interval: Dict[str, Any]) -> None:
+        """Appends a single segmented lithological boundary interval to the document's list.
+
+        Args:
+            log_id (str): Target well log identifier.
+            interval (Dict[str, Any]): Dictionary containing interval properties (top_y, bottom_y, cluster_id, confidence).
+        """
+        self.r.rpush(f"log:{log_id}:raw_intervals", json.dumps(interval))
+
+    def append_raw_intervals(
+        self,
+        log_id: str,
+        intervals: List[Dict[str, Any]],
+    ) -> None:
+        """Batch-appends multiple segmented lithological boundary intervals to Redis.
+
+        Args:
+            log_id (str): Target well log identifier.
+            intervals (List[Dict[str, Any]]): List of interval dictionaries to append.
+        """
+        if not intervals:
+            return
+        serialized = [json.dumps(inv) for inv in intervals]
+        self.r.rpush(f"log:{log_id}:raw_intervals", *serialized)
+
+    def get_raw_intervals(self, log_id: str) -> List[Dict[str, Any]]:
+        """Retrieves all segmented lithological intervals for a document, sorted by ascending top_y coordinate.
+
+        Args:
+            log_id (str): Target well log identifier.
+
+        Returns:
+            List[Dict[str, Any]]: Chronologically sorted list of interval definitions.
+        """
+        raw_items = self.r.lrange(f"log:{log_id}:raw_intervals", 0, -1)
+        intervals = [json.loads(item) for item in raw_items]
+        intervals.sort(key=lambda x: x["top_y"])
+        return intervals
+
+    def save_legend_map(self, log_id: str, legend_mapping: Dict[str, str]) -> None:
+        """Stores cluster identifier to geological rock classification mappings.
+
+        Args:
+            log_id (str): Target well log identifier.
+            legend_mapping (Dict[str, str]): Mapping of cluster keys (e.g. 'cluster_0') to rock names (e.g. 'Sandstone').
+        """
+        if legend_mapping:
+            self.r.hset(f"log:{log_id}:legend", mapping=legend_mapping)
+
+    def get_legend_map(self, log_id: str) -> Dict[str, str]:
+        """Retrieves the cluster-to-lithology classification mapping for a document.
+
+        Args:
+            log_id (str): Target well log identifier.
+
+        Returns:
+            Dict[str, str]: Mapping of cluster identifiers to resolved rock names.
+        """
+        return self.r.hgetall(f"log:{log_id}:legend")
+
+    # -------------------------------------------------------------------------
+    #  LIFECYCLE, METADATA & PROGRESS TRACKING
+    # -------------------------------------------------------------------------
+
     def set_document_meta(
         self,
         log_id: str,
@@ -157,6 +309,15 @@ class PipelineRedisClient:
         image_name: str,
         status: LogStatus = LogStatus.PROCESSING,
     ) -> None:
+        """Initializes metadata and target chunk completion goals for a dispatched document.
+
+        Args:
+            log_id (str): Target well log identifier.
+            total_depth (int): Total depth OCR slices scheduled for this file.
+            total_lith (int): Total lithology segmentation slices scheduled for this file.
+            image_name (str): Original filename of the TIFF image.
+            status (LogStatus, optional): Initial status of the log. Defaults to LogStatus.PROCESSING.
+        """
         self.r.hset(
             f"log:{log_id}:meta",
             mapping={
@@ -169,31 +330,141 @@ class PipelineRedisClient:
             },
         )
 
+    def get_document_meta(self, log_id: str) -> Dict[str, Any]:
+        """Fetches metadata, progress counters, and processing status for a document.
+
+        Args:
+            log_id (str): Target well log identifier.
+
+        Returns:
+            Dict[str, Any]: Parsed metadata dictionary containing chunk totals and active LogStatus.
+        """
+        meta = self.r.hgetall(f"log:{log_id}:meta")
+        if not meta:
+            return {}
+        return {
+            "image_name": meta.get("image_name"),
+            "total_depth_chunks": int(meta.get("total_depth_chunks", 0)),
+            "completed_depth_chunks": int(meta.get("completed_depth_chunks", 0)),
+            "total_lith_chunks": int(meta.get("total_lith_chunks", 0)),
+            "completed_lith_chunks": int(meta.get("completed_lith_chunks", 0)),
+            "status": LogStatus(meta.get("status", LogStatus.PENDING.value)),
+        }
+
     def set_document_status(self, log_id: str, status: LogStatus) -> None:
-        """Atomically updates the document processing lifecycle stage."""
+        """Updates the operational processing lifecycle stage of a document.
+
+        Args:
+            log_id (str): Target well log identifier.
+            status (LogStatus): New lifecycle status to assign.
+        """
         self.r.hset(f"log:{log_id}:meta", "status", status.value)
 
     def get_document_status(self, log_id: str) -> Optional[LogStatus]:
-        """Reads and validates the status against the LogStatus enum."""
+        """Reads and validates the current processing status of a document.
+
+        Args:
+            log_id (str): Target well log identifier.
+
+        Returns:
+            Optional[LogStatus]: Parsed LogStatus enum value, or None if the document does not exist.
+        """
         raw_status = self.r.hget(f"log:{log_id}:meta", "status")
-        if raw_status is None:
-            return None
-        return LogStatus(raw_status)
+        return LogStatus(raw_status) if raw_status else None
 
     # -------------------------------------------------------------------------
-    # Worker Result Storage (Used by Workers & Merger)
+    #  ATOMIC COMPLETION & BARRIER TRIGGER
     # -------------------------------------------------------------------------
-    def save_depth_points(self, log_id: str, y_to_depth_map: Dict[int, float]) -> None:
-        """Stores detected Y-coordinate -> depth value pairs."""
-        if y_to_depth_map:
-            str_map = {str(k): str(v) for k, v in y_to_depth_map.items()}
-            self.r.hset(f"log:{log_id}:depths", mapping=str_map)
 
-    def append_raw_interval(self, log_id: str, interval: Dict[str, Any]) -> None:
-        """Pushes an identified interval prediction to the document list."""
-        self.r.rpush(f"log:{log_id}:raw_intervals", json.dumps(interval))
+    def complete_depth_chunk(
+        self,
+        log_id: str,
+        msg_id: str,
+        image_path: str | Path,
+        column_bbox: List[int],
+    ) -> bool:
+        """Acknowledges a depth task, increments progress, and triggers merger if all tasks finished.
 
-    def save_legend_map(self, log_id: str, legend_mapping: Dict[str, str]) -> None:
-        """Stores cluster_id -> lithology_name mappings."""
-        if legend_mapping:
-            self.r.hset(f"log:{log_id}:legend", mapping=legend_mapping)
+        Args:
+            log_id (str): Target well log identifier.
+            msg_id (str): Redis message identifier to acknowledge.
+            image_path (str | Path): Path to the source TIFF image.
+            column_bbox (List[int]): Lithology bounding box required for final merging visualization.
+
+        Returns:
+            bool: True if this chunk completed the barrier and triggered the merge step, False otherwise.
+        """
+        self.ack_task(self.STREAM_DEPTH, self.GROUP_DEPTH, msg_id)
+        self.r.hincrby(f"log:{log_id}:meta", "completed_depth_chunks", 1)
+        return self._check_and_trigger_merge(log_id, image_path, column_bbox)
+
+    def complete_lith_chunk(
+        self,
+        log_id: str,
+        msg_id: str,
+        image_path: str | Path,
+        column_bbox: List[int],
+    ) -> bool:
+        """Acknowledges a lithology task, increments progress, and triggers merger if all tasks finished.
+
+        Args:
+            log_id (str): Target well log identifier.
+            msg_id (str): Redis message identifier to acknowledge.
+            image_path (str | Path): Path to the source TIFF image.
+            column_bbox (List[int]): Lithology bounding box required for final merging visualization.
+
+        Returns:
+            bool: True if this chunk completed the barrier and triggered the merge step, False otherwise.
+        """
+        self.ack_task(self.STREAM_LITH, self.GROUP_LITH, msg_id)
+        self.r.hincrby(f"log:{log_id}:meta", "completed_lith_chunks", 1)
+        return self._check_and_trigger_merge(log_id, image_path, column_bbox)
+
+    def _check_and_trigger_merge(
+        self,
+        log_id: str,
+        image_path: str | Path,
+        column_bbox: List[int],
+    ) -> bool:
+        """Atomically checks if all chunks are done across both disciplines and triggers merge.
+
+        Args:
+            log_id (str): Target well log identifier.
+            image_path (str | Path): Path to the source TIFF image.
+            column_bbox (List[int]): Lithology bounding box required for final merging visualization.
+
+        Returns:
+            bool: True if this call triggered the merge task, False otherwise.
+        """
+        meta = self.r.hgetall(f"log:{log_id}:meta")
+        if not meta:
+            return False
+
+        depth_done = int(meta.get("completed_depth_chunks", 0))
+        depth_total = int(meta.get("total_depth_chunks", -1))
+        lith_done = int(meta.get("completed_lith_chunks", 0))
+        lith_total = int(meta.get("total_lith_chunks", -2))
+
+        if depth_done >= depth_total and lith_done >= lith_total:
+            current_status = meta.get("status")
+            if current_status == LogStatus.PROCESSING.value:
+                self.set_document_status(log_id, LogStatus.MERGING)
+                self.push_merge_task(
+                    log_id=log_id,
+                    image_path=str(image_path),
+                    column_bbox=column_bbox,
+                )
+                return True
+        return False
+
+    def is_log_finished(self, log_id: str) -> bool:
+        """Checks if a log has finished all chunk processing stages.
+
+        Args:
+            log_id (str): Target well log identifier.
+
+        Returns:
+            bool: True if document status is MERGING or COMPLETED, False otherwise.
+        """
+        status = self.get_document_status(log_id)
+        return status in (LogStatus.MERGING, LogStatus.COMPLETED)
