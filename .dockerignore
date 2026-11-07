@@ -1,0 +1,11 @@
+.venv
+.git
+.gitignore
+dataset/
+redis_data/
+output/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store

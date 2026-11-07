@@ -3,7 +3,7 @@ import json
 import redis
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Generator
 
 
 class LogStatus(str, Enum):
@@ -17,11 +17,12 @@ class LogStatus(str, Enum):
 
 
 class PipelineRedisClient:
-    """High-level Redis interface for task streaming, state tracking, and intermediate ML result storage."""
+    """High-level Redis interface for task streaming, event broadcasting, and ML data storage."""
 
     STREAM_DEPTH = "stream:depth_tasks"
     STREAM_LITH = "stream:lith_tasks"
     STREAM_MERGE = "stream:merge_tasks"
+    STREAM_EVENTS = "stream:events"
 
     GROUP_DEPTH = "group:depth_workers"
     GROUP_LITH = "group:lith_workers"
@@ -50,7 +51,7 @@ class PipelineRedisClient:
         )
 
     def init_consumer_groups(self) -> None:
-        """Creates required Redis streams and consumer groups idempotently.
+        """Creates required Redis task streams and consumer groups idempotently.
 
         Raises:
             redis.exceptions.ResponseError: If stream creation fails with an unexpected error other than BUSYGROUP.
@@ -68,7 +69,7 @@ class PipelineRedisClient:
                     raise e
 
     # -------------------------------------------------------------------------
-    #  TASK PRODUCERS (Used by Dispatcher & Barrier Engine)
+    # TASK PRODUCERS (Dispatcher & Barrier Engine)
     # -------------------------------------------------------------------------
 
     def push_depth_task(
@@ -156,8 +157,45 @@ class PipelineRedisClient:
         return self.r.xadd(self.STREAM_MERGE, {"data": json.dumps(payload)})
 
     # -------------------------------------------------------------------------
-    #  TASK CONSUMERS (Used by Workers & Merger)
+    # TASK CONSUMER STREAMS (Workers & Merger)
     # -------------------------------------------------------------------------
+
+    def listen_tasks(
+        self,
+        stream: str,
+        group: str,
+        consumer_name: str,
+        block_ms: int = 2000,
+    ) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
+        """Streams unacknowledged tasks from a consumer group continuously as a generator.
+
+        Args:
+            stream (str): Name of the stream to consume from.
+            group (str): Consumer group assigned to the stream.
+            consumer_name (str): Unique identifier for the calling worker instance.
+            block_ms (int, optional): Blocking timeout in milliseconds per tick. Defaults to 2000.
+
+        Yields:
+            Tuple[str, Dict[str, Any]]: Tuple of (message_id, parsed_payload_dict) on task arrival.
+        """
+        while True:
+            messages = self.r.xreadgroup(
+                groupname=group,
+                consumername=consumer_name,
+                streams={stream: ">"},
+                count=1,
+                block=block_ms,
+            )
+            if not messages:
+                continue
+
+            _, stream_messages = messages[0]
+            if not stream_messages:
+                continue
+
+            for msg_id, fields in stream_messages:
+                payload = json.loads(fields["data"])
+                yield msg_id, payload
 
     def read_task(
         self,
@@ -166,10 +204,10 @@ class PipelineRedisClient:
         consumer_name: str,
         block_ms: int = 2000,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Reads a single unacknowledged task from a Redis stream consumer group.
+        """Reads a single unacknowledged task on demand without streaming.
 
         Args:
-            stream (str): Name of the stream to read from (e.g., PipelineRedisClient.STREAM_DEPTH).
+            stream (str): Name of the stream to read from.
             group (str): Consumer group assigned to the stream.
             consumer_name (str): Unique identifier for the calling worker instance.
             block_ms (int, optional): Blocking timeout in milliseconds. Defaults to 2000.
@@ -206,7 +244,74 @@ class PipelineRedisClient:
         self.r.xack(stream, group, msg_id)
 
     # -------------------------------------------------------------------------
-    #  INTERMEDIATE ML DATA STORAGE & RETRIEVAL
+    # BROADCAST EVENT STREAM (Dispatcher & Dashboard UI)
+    # -------------------------------------------------------------------------
+
+    def emit_event(
+        self,
+        log_id: str,
+        status: LogStatus,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Publishes a document lifecycle or chunk event to the broadcast event stream.
+
+        Args:
+            log_id (str): Target well log identifier.
+            status (LogStatus): Operational status reached.
+            details (Optional[Dict[str, Any]], optional): Optional supplementary context dictionary. Defaults to None.
+
+        Returns:
+            str: Generated event entry ID in stream:events.
+        """
+        payload: Dict[str, Any] = {
+            "log_id": log_id,
+            "status": status.value,
+        }
+        if details:
+            payload.update(details)
+        return self.r.xadd(self.STREAM_EVENTS, {"data": json.dumps(payload)})
+
+    def get_latest_event_id(self) -> str:
+        """Fetches the newest message ID from stream:events, or '$' if empty.
+
+        Returns:
+            str: Stream ID string or '$' to target future incoming events.
+        """
+        last_entry = self.r.xrevrange(self.STREAM_EVENTS, "+", "-", count=1)
+        return last_entry[0][0] if last_entry else "$"
+
+    def listen_events(
+        self,
+        since_id: str = "$",
+        block_ms: int = 2000,
+    ) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
+        """Streams lifecycle events continuously as a generator from stream:events.
+
+        Args:
+            since_id (str, optional): Start streaming entries occurring strictly after this ID. Defaults to "$".
+            block_ms (int, optional): Milliseconds to block kernel socket waiting for events. Defaults to 2000.
+
+        Yields:
+            Tuple[str, Dict[str, Any]]: Tuple of (event_id, parsed_payload_dict) on event arrival.
+        """
+        current_id = since_id
+        while True:
+            response = self.r.xread(
+                streams={self.STREAM_EVENTS: current_id},
+                count=10,
+                block=block_ms,
+            )
+            if not response:
+                continue
+
+            _, entries = response[0]
+            for entry_id, fields in entries:
+                current_id = entry_id
+                payload = json.loads(fields["data"])
+                yield entry_id, payload
+
+    # -------------------------------------------------------------------------
+    # INTERMEDIATE ML DATA STORAGE & RETRIEVAL
     # -------------------------------------------------------------------------
 
     def save_depth_points(self, log_id: str, y_to_depth_map: Dict[int, float]) -> None:
@@ -298,7 +403,7 @@ class PipelineRedisClient:
         return self.r.hgetall(f"log:{log_id}:legend")
 
     # -------------------------------------------------------------------------
-    #  LIFECYCLE, METADATA & PROGRESS TRACKING
+    # LIFECYCLE, METADATA & PROGRESS TRACKING
     # -------------------------------------------------------------------------
 
     def set_document_meta(
@@ -329,6 +434,7 @@ class PipelineRedisClient:
                 "status": status.value,
             },
         )
+        self.emit_event(log_id, status)
 
     def get_document_meta(self, log_id: str) -> Dict[str, Any]:
         """Fetches metadata, progress counters, and processing status for a document.
@@ -352,13 +458,14 @@ class PipelineRedisClient:
         }
 
     def set_document_status(self, log_id: str, status: LogStatus) -> None:
-        """Updates the operational processing lifecycle stage of a document.
+        """Updates the operational processing lifecycle stage of a document and broadcasts an event.
 
         Args:
             log_id (str): Target well log identifier.
             status (LogStatus): New lifecycle status to assign.
         """
         self.r.hset(f"log:{log_id}:meta", "status", status.value)
+        self.emit_event(log_id, status)
 
     def get_document_status(self, log_id: str) -> Optional[LogStatus]:
         """Reads and validates the current processing status of a document.
@@ -372,8 +479,59 @@ class PipelineRedisClient:
         raw_status = self.r.hget(f"log:{log_id}:meta", "status")
         return LogStatus(raw_status) if raw_status else None
 
+    def get_multiple_document_status(
+        self,
+        log_ids: List[str],
+    ) -> Dict[str, Optional[LogStatus]]:
+        """Fetches statuses for multiple documents in a single pipelined roundtrip.
+
+        Args:
+            log_ids (List[str]): List of target well log identifiers.
+
+        Returns:
+            Dict[str, Optional[LogStatus]]: Mapping of log_id to LogStatus or None if not found.
+        """
+        if not log_ids:
+            return {}
+        pipe = self.r.pipeline()
+        for log_id in log_ids:
+            pipe.hget(f"log:{log_id}:meta", "status")
+        statuses = pipe.execute()
+        return {
+            log_id: LogStatus(status) if status else None
+            for log_id, status in zip(log_ids, statuses)
+        }
+
+    def get_all_tracked_logs(self) -> Dict[str, Dict[str, Any]]:
+        """Recovers all document metadata records stored in Redis in one pipelined call.
+
+        Returns:
+            Dict[str, Dict[str, Any]]: Mapping of log_id to parsed document metadata dictionaries.
+        """
+        meta_keys = self.r.keys("log:*:meta")
+        if not meta_keys:
+            return {}
+
+        pipe = self.r.pipeline()
+        for key in meta_keys:
+            pipe.hgetall(key)
+        all_meta = pipe.execute()
+
+        results = {}
+        for key, meta in zip(meta_keys, all_meta):
+            log_id = key.split(":")[1]
+            results[log_id] = {
+                "image_name": meta.get("image_name"),
+                "total_depth_chunks": int(meta.get("total_depth_chunks", 0)),
+                "completed_depth_chunks": int(meta.get("completed_depth_chunks", 0)),
+                "total_lith_chunks": int(meta.get("total_lith_chunks", 0)),
+                "completed_lith_chunks": int(meta.get("completed_lith_chunks", 0)),
+                "status": LogStatus(meta.get("status", LogStatus.PENDING.value)),
+            }
+        return results
+
     # -------------------------------------------------------------------------
-    #  ATOMIC COMPLETION & BARRIER TRIGGER
+    # ATOMIC COMPLETION & BARRIER TRIGGER
     # -------------------------------------------------------------------------
 
     def complete_depth_chunk(
@@ -468,3 +626,8 @@ class PipelineRedisClient:
         """
         status = self.get_document_status(log_id)
         return status in (LogStatus.MERGING, LogStatus.COMPLETED)
+
+    def flush_all(self) -> None:
+        """Flushes the active Redis database and recreates all required consumer groups."""
+        self.r.flushdb()
+        self.init_consumer_groups()

@@ -19,24 +19,36 @@ services:
       retries: 5
 
   dispatcher:
-    build:
-      context: .
-      dockerfile: build/Dockerfile
+    image: well_log_dispatcher
     container_name: well_log_dispatcher
+    ports:
+      - "8000:8000"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - SLICE_HEIGHT=2000
+      - BATCH_SIZE=5
       - DATA_DIR=/data
       - OUTPUT_DIR=/output
     volumes:
       - ./dataset:/data:ro
       - ./output:/output
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     depends_on:
       redis:
         condition: service_healthy
     command: python -m src.dispatcher
-    profiles: ["app"]
 
   # worker-depth:
   #   build:
