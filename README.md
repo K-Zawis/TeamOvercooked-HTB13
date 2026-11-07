@@ -6,10 +6,56 @@ between trusted observations. Rock segmentation and naming remain separate.
 
 ## Setup
 
-Use Python 3.11+ and `python -m pip install -r requirements.txt`. Install the
+Use Python 3.15. Runtime dependencies live in `pyproject.toml`; the `dev`
+dependency group includes pytest, rasterio, and fakeredis with Lua support.
+`uv.lock` pins the resolved versions, and `.python-version` selects Python 3.15.
+
+```bash
+uv python install
+uv sync --locked
+```
+
+Without uv, create a Python 3.15 virtual environment and install the generated
+pip requirements instead:
+
+```bash
+python3.15 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+# To include the validation/test tools as well:
+python -m pip install -r requirements-validation.txt
+```
+
+Pip users can run `python worker_depth.py`, `python -m src.dispatcher`, and
+`python -m pytest` directly inside that environment; uv is not required.
+
+Keep `pyproject.toml` as the dependency source of truth. After changing dependencies,
+update the lock and regenerate both pip exports; do not edit the requirements
+files by hand:
+
+```bash
+uv lock
+python tools/sync_requirements.py
+python tools/sync_requirements.py --check
+```
+
+The exports pin runtime dependencies (`requirements.txt`) and runtime plus the
+`dev` group (`requirements-validation.txt`) to the same versions as `uv.lock`.
+The `--check` command exits nonzero if either export is stale or if the lockfile
+no longer matches `pyproject.toml`, and can also be run in CI.
+
+`uv sync` includes the development group by default. For a worker-only environment,
+use `uv sync --locked --no-dev` and `uv run --locked --no-dev python worker_depth.py`.
+Some native dependencies may need a source build if a Python 3.15 wheel is not
+available for your platform. Install the
 Tesseract executable and English language data through your system package
 manager (for example, `tesseract-ocr` and `tesseract-ocr-eng` on Debian/Ubuntu).
 No network requests or model downloads occur during extraction.
+
+Heavy imaging and Redis imports use Python 3.15's explicit `lazy import` syntax.
+They load on first use, so importing pipeline modules or showing worker/validator
+CLI help does not load NumPy, Pillow, tifffile, Zarr, imagecodecs, or redis-py.
+Library internals retain their normal import behavior. `worker.py` is unchanged.
 
 ```python
 from models import DepthExtractor
@@ -178,7 +224,7 @@ when restarting a worker to resume its pending work.
 For a local end-to-end run, put a JSON **array** of tasks in a file and run:
 
 ```bash
-python worker_depth.py --tasks /tmp/depth-tasks.json
+uv run --locked python worker_depth.py --tasks /tmp/depth-tasks.json
 ```
 
 This seeds and drains the in-memory stub, then prints its hashes as JSON.
@@ -188,10 +234,10 @@ connected to an external Redis service. The original `worker.py` is unchanged.
 ## Tests and dataset validation
 
 ```bash
-python -m pip install -r requirements-validation.txt
-python -m pytest -q
-python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
-python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-all.json
+uv sync --locked
+uv run --locked pytest -q
+uv run --locked python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
+uv run --locked python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-all.json
 ```
 
 Set `TESSERACT_BIN` for tests, or `--tesseract` for validation, to use a nonstandard

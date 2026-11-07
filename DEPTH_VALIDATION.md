@@ -50,10 +50,10 @@ Visual inspection of these crops shows competing printed numeric series, abbrevi
 ## Reproduce and integration limits
 
 ```bash
-python -m pip install -r requirements-validation.txt
-python -m pytest -q
-python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
-python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-smoke.json
+uv sync --locked
+uv run --locked pytest -q
+uv run --locked python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
+uv run --locked python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-smoke.json
 ```
 
 Tesseract and English language data must also be installed. The JSON reports include emitted anchors, missed reviewed labels, timing, and retained candidate counts. Use `--tesseract` for a custom executable. Timings are observations, not a controlled benchmark.

@@ -1,7 +1,7 @@
 """Windowed dataset validation; reference depths never enter the extractor.
 
-python validate_depth.py --dataset ../dataset --output /tmp/depth-validation.json
-python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000
+uv run python validate_depth.py --dataset ../dataset --output /tmp/depth-validation.json
+uv run python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000
 """
 
 import argparse
@@ -10,10 +10,10 @@ from pathlib import Path
 import time
 import warnings
 
-import numpy as np
+lazy import numpy as np
 
-from depth_extraction import TesseractOCR
-from models import DepthExtractor
+lazy from depth_extraction import TesseractOCR
+lazy from models import DepthExtractor
 
 
 def read_rgb(source, box):

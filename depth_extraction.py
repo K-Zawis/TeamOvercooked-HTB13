@@ -9,8 +9,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
-import numpy as np
-from PIL import Image, ImageOps
+lazy import numpy as np
+lazy from PIL import Image, ImageOps
 
 
 @dataclass(frozen=True)

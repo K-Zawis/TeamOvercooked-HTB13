@@ -1,6 +1,6 @@
 import os
 import json
-import redis
+lazy import redis
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List, Generator
