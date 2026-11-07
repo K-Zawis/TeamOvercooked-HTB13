@@ -23,7 +23,8 @@ def test_results_counter_and_dedup_committed_together(client):
     client.hset(meta, mapping={"total_depth": "2", "completed_lith": "1"})
     assert commit_depth_result(client, "0000000009", "task-a", {17200: 4100.0, 25480: 4200.0})
     assert hgetall(client, depths) == {"17200": "4100.0", "25480": "4200.0"}
-    assert hgetall(client, meta) == {"total_depth": "2", "completed_lith": "1", "completed_depth": "1"}
+    assert hgetall(client, meta) == {"total_depth": "2", "completed_lith": "1",
+                                   "completed_depth": "1", "completed_depth_chunks": "1"}
     assert client.sismember(done, "task-a")
     # A second dispatch/retry cannot replace results or increment the counter.
     assert not commit_depth_result(client, "0000000009", "task-a", {17200: 9999})
@@ -38,6 +39,23 @@ def test_empty_success_counts_and_records_completion(client):
     assert hgetall(client, depths) == {}
     assert hgetall(client, meta)["completed_depth"] == "1"
     assert client.sismember(done, "empty")
+
+
+def test_incoming_schema_counter_and_legacy_alias_are_synchronized(client):
+    _, meta, _ = staging_keys("a")
+    client.hset(meta, mapping={"completed_depth_chunks": "3", "total_depth_chunks": "5"})
+    commit_depth_result(client, "a", "next", {})
+    assert hgetall(client, meta) == {"completed_depth_chunks": "4", "completed_depth": "4",
+                                   "total_depth_chunks": "5"}
+
+
+def test_disagreeing_counter_aliases_rejected_before_writes(client):
+    depths, meta, done = staging_keys("a")
+    client.hset(meta, mapping={"completed_depth": "1", "completed_depth_chunks": "2"})
+    with pytest.raises(Exception):
+        commit_depth_result(client, "a", "next", {20: 100})
+    assert hgetall(client, depths) == {}
+    assert not client.sismember(done, "next")
 
 
 @pytest.mark.parametrize("counter", ["bad", "1.5", "-1", "01", "", "9223372036854775807", "9"*100])

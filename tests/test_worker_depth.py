@@ -125,7 +125,7 @@ def test_stream_hash_coordinates_and_ack_order(image_path):
     worker = DepthWorker(client, FakeExtractor(), consumer_name="worker-a")
     assert worker.run_once(block_ms=1)
     assert client.hashes == {"log:0000000009:depths": {"120": "4100.0"},
-                             "log:0000000009:meta": {"completed_depth": "1"}}
+                             "log:0000000009:meta": {"completed_depth": "1", "completed_depth_chunks": "1"}}
     assert client.events == ["commit", "ack"]
     assert mid not in client.groups[(TASK_STREAM, worker.group)]["pending"]
     assert not worker.run_once(block_ms=1)
@@ -317,15 +317,34 @@ def test_cli_seeds_and_drains_stub(image_path, tmp_path, monkeypatch, capsys):
     worker_depth.main()
     assert json.loads(capsys.readouterr().out) == {
         "log:0000000009:depths": {"120": "4100.0"},
-        "log:0000000009:meta": {"completed_depth": "1"},
+        "log:0000000009:meta": {"completed_depth": "1", "completed_depth_chunks": "1"},
     }
 
 
-def test_cli_without_tasks_starts_listener(monkeypatch):
+def test_cli_explicit_stub_starts_local_listener(monkeypatch):
     import worker_depth
     called = []
     monkeypatch.setattr(worker_depth.DepthWorker, "run_forever", lambda self: called.append(self))
-    monkeypatch.setattr("sys.argv", ["worker_depth.py"])
+    monkeypatch.setattr("sys.argv", ["worker_depth.py", "--stub"])
     worker_depth.main()
     assert len(called) == 1
     assert isinstance(called[0].redis, StubRedisClient)
+
+
+def test_cli_defaults_to_pipeline_redis_client(monkeypatch):
+    import worker_depth
+    client = StubRedisClient()
+    called = []
+    class FakePipelineClient:
+        def __init__(self, **kwargs):
+            called.append(kwargs)
+            self.r = client
+    running = []
+    monkeypatch.setattr(worker_depth, "PipelineRedisClient", FakePipelineClient)
+    monkeypatch.setattr(worker_depth.DepthWorker, "run_forever", lambda self: running.append(self))
+    monkeypatch.setattr("sys.argv", ["worker_depth.py", "--redis-host", "redis", "--redis-port", "6380",
+                                      "--redis-db", "2", "--consumer", "depth-1"])
+    worker_depth.main()
+    assert called == [{"host": "redis", "port": 6380, "db": 2}]
+    assert running[0].redis is client and running[0].consumer_name == "depth-1"
+    assert running[0].group == "group:depth_workers"

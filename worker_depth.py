@@ -1,7 +1,7 @@
 """Consume depth-strip tasks and publish global pixel/depth anchors to Redis.
 
-The default CLI uses an in-memory Redis stub. Inject the real Redis client into
-DepthWorker and call run_forever() when broker integration is available.
+The CLI connects through src.redis_client.PipelineRedisClient by default.
+Use --stub or --tasks for an in-memory client with no network connection.
 """
 
 import argparse
@@ -22,10 +22,11 @@ import zarr
 from models import DepthExtractor
 from depth_staging import commit_depth_result, staging_keys
 from redis_stub import RedisClient, StubRedisClient
+from src.redis_client import PipelineRedisClient
 
 
-TASK_STREAM = "stream:depth_tasks"
-CONSUMER_GROUP = "depth-workers"
+TASK_STREAM = PipelineRedisClient.STREAM_DEPTH
+CONSUMER_GROUP = PipelineRedisClient.GROUP_DEPTH
 logger = logging.getLogger(__name__)
 
 
@@ -209,12 +210,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", type=Path,
                         help="JSON array of tasks to enqueue in the in-memory Redis stub")
+    parser.add_argument("--stub", action="store_true", help="listen on the in-memory stub instead of Redis")
+    parser.add_argument("--redis-host", default=None, help="default: REDIS_HOST or localhost")
+    parser.add_argument("--redis-port", type=int, default=None, help="default: REDIS_PORT or 6379")
+    parser.add_argument("--redis-db", type=int, default=0)
+    parser.add_argument("--consumer", default=None, help="stable consumer name for pending-task recovery")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    client = StubRedisClient()
-    logger.warning("Using in-memory Redis stub; no external broker is connected")
+    if args.stub or args.tasks is not None:
+        client = StubRedisClient()
+        logger.warning("Using in-memory Redis stub; no external broker is connected")
+    else:
+        client = PipelineRedisClient(host=args.redis_host, port=args.redis_port, db=args.redis_db).r
     if args.tasks is None:
-        DepthWorker(client).run_forever()
+        DepthWorker(client, consumer_name=args.consumer).run_forever()
         return
     tasks = json.loads(args.tasks.read_text())
     if not isinstance(tasks, list):

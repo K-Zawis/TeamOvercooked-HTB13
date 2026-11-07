@@ -114,7 +114,12 @@ class StubRedisClient:
             for name in (depths, meta):
                 if name in self.sets or name in self.streams:
                     raise RuntimeError("WRONGTYPE depth results and metadata must be hashes")
-            counter = self.hashes.get(meta, {}).get("completed_depth", "0")
+            existing_meta = self.hashes.get(meta, {})
+            canonical = existing_meta.get("completed_depth_chunks")
+            legacy = existing_meta.get("completed_depth")
+            if canonical is not None and legacy is not None and canonical != legacy:
+                raise ValueError("depth completion counters disagree")
+            counter = canonical if canonical is not None else (legacy if legacy is not None else "0")
             if (not counter.isascii() or not counter.isdecimal()
                     or (len(counter) > 1 and counter.startswith("0"))):
                 raise ValueError("completed_depth must be a nonnegative integer")
@@ -125,6 +130,7 @@ class StubRedisClient:
             depth_values.update(zip(pairs[::2], pairs[1::2]))
             meta_values = dict(self.hashes.get(meta, {}))
             meta_values["completed_depth"] = str(int(counter) + 1)
+            meta_values["completed_depth_chunks"] = meta_values["completed_depth"]
             completed_values = self.sets.get(completed, set()) | {task_id}
             if pairs:
                 self.hashes[depths] = depth_values

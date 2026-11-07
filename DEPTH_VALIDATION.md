@@ -4,7 +4,7 @@
 
 Tested with Python 3.13.12, Tesseract 5.5.4 and English tessdata 4.1.0, NumPy 2.5.4, Pillow 13.0.0, rasterio 1.5.2, and pytest 9.2.0. OCR ran locally with one OpenMP thread per call. Temporary dependencies were installed outside the repository.
 
-The original extraction-only suite had **38 passing tests**, including actual Tesseract on a rendered scale streamed at heights 71, 200, and 600. Tests also cover numerical parsing, rotations, seam recovery, pending anchors, conflicting readings, state rollback, interpolation limits, resets, and a 75-strip bounded-state stream. The expanded suite including broker compliance now has **110 passing tests** in total.
+The original extraction-only suite had **38 passing tests**, including actual Tesseract on a rendered scale streamed at heights 71, 200, and 600. Tests also cover numerical parsing, rotations, seam recovery, pending anchors, conflicting readings, state rollback, interpolation limits, resets, and a 75-strip bounded-state stream. The expanded suite including Redis-branch integration now has **122 passing tests** in total.
 
 ## Selected full-column runs
 
@@ -91,7 +91,7 @@ compliance changes below. The earlier broker counts are historical measurements.
 
 ## Completion counting and independent-task staging
 
-The current suite reports **110 passed**. In addition to the TIFF and OCR tests,
+The compliance-fix suite reported **110 passed**. In addition to the TIFF and OCR tests,
 the actual completion Lua script is exercised with fakeredis 2.40.0 and lupa 2.8,
 as well as the in-memory client. Coverage includes concurrent duplicate commits,
 empty successful results, invalid Redis key types, invalid/overflowing counters,
@@ -132,3 +132,23 @@ These checks used actual TIFFs and Tesseract, with the stub Redis client. A real
 Redis deployment and persistence/failover behavior remain untested. The dispatcher
 must clear the completion-marker set together with the other staging keys before
 starting a fresh run for a reused log ID.
+
+## Integration with origin/feature/redis
+
+Merged upstream commit `d6e8ee9`, retaining its Docker Compose Redis service,
+`PipelineRedisClient`, and `LogDispatcher`. The worker now connects through the
+real client by default and shares its `group:depth_workers` group. `--stub` and
+`--tasks` remain available for local runs without a server.
+
+The complete suite reports **122 passed**. New integration tests dispatch
+annotations through the incoming wrapper, consume them with `DepthWorker`, and
+execute the actual completion Lua script using fakeredis. They verify matching
+consumer groups, absolute task paths, canonical `completed_depth_chunks` counters
+and the synchronized `completed_depth` alias, pending-task retries, fresh-run
+marker cleanup, positive slice heights, and distinct results for documents that
+share a filename prefix. Full filename stems are now document IDs.
+
+`docker compose config --quiet` passes. A live Redis container was not started:
+Docker daemon access is denied in this environment, including outside the
+sandbox. Real-server persistence/failover remains untested. Existing TIFF/OCR
+regressions pass; `worker.py` remains unchanged.

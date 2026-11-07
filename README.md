@@ -99,21 +99,38 @@ from separate logs can mix; the extractor cannot infer document boundaries.
 ## Redis depth worker
 
 `worker_depth.py` consumes tasks from Redis Stream `stream:depth_tasks` using
-consumer group `depth-workers`. `redis_stub.py` supplies an in-memory client for
-now; it makes no network connections. Replace it by injecting the forthcoming
-Redis client, with redis-py-compatible `xgroup_create`, `xreadgroup`, `sismember`,
-`eval`, and `xack` methods:
+consumer group `group:depth_workers`, shared with `src.redis_client.PipelineRedisClient`
+and the dispatcher. The CLI connects to that Redis client by default. Connection
+settings come from `REDIS_HOST`/`REDIS_PORT` or command-line overrides:
+
+```bash
+docker compose up -d redis
+DATA_DIR=../dataset python -m src.dispatcher '0000000009_d-582_0000020435-0001_log01_fe_1in_md.json'
+python worker_depth.py --redis-host localhost --redis-port 6379 --consumer depth-worker-1
+```
+
+The dispatcher emits absolute image paths, which must also be accessible to the
+workers. Document IDs are full annotation filename stems, preserving leading
+zeroes and preventing different scans with a shared prefix from overwriting one
+another's results. `SLICE_HEIGHT` defaults to 2000 and must be positive.
+
+For programmatic use, inject the wrapper's underlying redis-py connection:
 
 ```python
 from worker_depth import DepthWorker
+from src.redis_client import PipelineRedisClient
 
-DepthWorker(redis_client, consumer_name="depth-worker-1").run_forever()
+pipeline = PipelineRedisClient()
+DepthWorker(pipeline.r, consumer_name="depth-worker-1").run_forever()
 ```
 
 The worker creates its consumer group at `0-0` to include existing tasks. Stream
 entries normally carry one `data` field containing the JSON task:
 
 ```python
+import json
+
+redis_client = pipeline.r
 redis_client.xadd("stream:depth_tasks", {"data": json.dumps({
     "log_id": "0000000009",
     "image_path": "/data/images/0000000009_d-582_0000020435-0001_log01_fe_1in_md.tif",
@@ -155,7 +172,8 @@ results. The legacy `extract()` method retains its ordered-stream behavior for
 other callers; broker workers use only `extract_observations()`.
 
 The Lua operation in `depth_staging.py` publishes depth hash entries, executes
-`HINCRBY log:<id>:meta completed_depth 1`, and records a completion marker in
+`HINCRBY log:<id>:meta completed_depth_chunks 1`, keeps `completed_depth` as a
+synchronized compatibility alias, and records a completion marker in
 Set `log:<id>:depth_completed_tasks` as one atomic Redis operation. Other metadata
 fields are preserved. The marker is a SHA-256 fingerprint of the log ID, image
 path, column box, and requested rows, so duplicate dispatches with different
@@ -163,16 +181,21 @@ stream IDs count only once. The worker then calls XACK. Lost commit responses or
 failed acknowledgements can be retried without repeating OCR or incrementing
 completion again. Empty successful tasks follow the same completion protocol.
 
-The dispatcher must reset the completion-marker set together with depths and
-metadata when starting a fresh run for a reused log ID. Keep those staging keys
-for the duration of retries; the merger does not need to read the marker set.
-Results and counter updates use the same keys specified by the system design.
+The merger can compare `completed_depth_chunks` to `total_depth_chunks`, and
+`completed_lith_chunks` to `total_lith_chunks`. Existing callers that read
+`completed_depth` continue to work; disagreeing counter aliases fail before any
+new results are written.
+
+`set_document_meta` initializes a fresh run in a Redis transaction, clearing
+old depths, completion markers, intervals, and legend alongside metadata.
+Before redispatching a reused document ID, stop/drain the previous run's workers
+and queued tasks. Do not reset staging while retries are still in progress.
+The merger does not need to read the marker set.
 
 OCR, decoding, and Redis failures leave the task pending. The worker retries its
 own pending messages before new work, backing off one second on errors. Delivery
 is at least once, with deduplicated publication and counting. Claiming abandoned
-consumers' tasks, dead-letter handling, and durable connection configuration
-remain part of the forthcoming broker integration. Use a stable `consumer_name`
+consumers' tasks and dead-letter handling remain outside this worker. Use a stable `consumer_name`
 when restarting a worker to resume its pending work.
 
 For a local end-to-end run, put a JSON **array** of tasks in a file and run:
@@ -182,8 +205,10 @@ python worker_depth.py --tasks /tmp/depth-tasks.json
 ```
 
 This seeds and drains the in-memory stub, then prints its hashes as JSON.
-`python worker_depth.py` starts a blocking listener on the stub; it is not
-connected to an external Redis service. The original `worker.py` is unchanged.
+`python worker_depth.py --stub` starts a blocking in-memory listener without
+connecting to Redis. The stub implements the same low-level `xgroup_create`,
+`xreadgroup`, `sismember`, `eval`, and `xack` contract used by the real client.
+The original `worker.py` is unchanged.
 
 ## Tests and dataset validation
 

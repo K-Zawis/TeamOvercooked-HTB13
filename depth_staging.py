@@ -16,7 +16,12 @@ local depth_type = redis.call('TYPE', KEYS[1]).ok
 if depth_type ~= 'none' and depth_type ~= 'hash' then
     return redis.error_reply('depth results key must be a hash')
 end
-local counter = redis.call('HGET', KEYS[2], 'completed_depth')
+local canonical = redis.call('HGET', KEYS[2], 'completed_depth_chunks')
+local legacy = redis.call('HGET', KEYS[2], 'completed_depth')
+if canonical and legacy and canonical ~= legacy then
+    return redis.error_reply('depth completion counters disagree')
+end
+local counter = canonical or legacy
 if counter then
     if counter ~= '0' and not string.match(counter, '^[1-9][0-9]*$') then
         return redis.error_reply('completed_depth must be a nonnegative integer')
@@ -29,7 +34,12 @@ end
 for first = 2, #ARGV, 256 do
     redis.call('HSET', KEYS[1], unpack(ARGV, first, math.min(first + 255, #ARGV)))
 end
-redis.call('HINCRBY', KEYS[2], 'completed_depth', 1)
+if not canonical then
+    redis.call('HSET', KEYS[2], 'completed_depth_chunks', counter or '0')
+end
+redis.call('HINCRBY', KEYS[2], 'completed_depth_chunks', 1)
+redis.call('HSET', KEYS[2], 'completed_depth',
+           redis.call('HGET', KEYS[2], 'completed_depth_chunks'))
 redis.call('SADD', KEYS[3], ARGV[1])
 return 1
 """
