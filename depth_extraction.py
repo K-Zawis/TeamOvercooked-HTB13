@@ -224,7 +224,7 @@ class StreamingDepthExtractor:
         self._emitted = {}
 
     @staticmethod
-    def _merge(anchors):
+    def _merge(anchors, limit=256):
         groups = []
         for anchor in sorted(anchors, key=lambda a: a.y):
             if groups and anchor.y - groups[-1][0].y <= 3:
@@ -250,7 +250,8 @@ class StreamingDepthExtractor:
                         :2
                     ]
                 )
-        return sorted(merged, key=lambda a: a.y)[-256:]
+        merged = sorted(merged, key=lambda a: a.y)
+        return merged[-limit:] if limit is not None else merged
 
     @staticmethod
     def _tick_y(gray, box):
@@ -276,8 +277,8 @@ class StreamingDepthExtractor:
             return round(sum(rows) / len(rows))
         return round(centre)
 
-    def extract(self, depth_crop: np.ndarray) -> dict[str, dict[int, float]]:
-        """Consume one strip atomically; failures leave state unchanged."""
+    @staticmethod
+    def _validate_image(depth_crop):
         if (
             not isinstance(depth_crop, np.ndarray)
             or depth_crop.dtype != np.uint8
@@ -286,16 +287,9 @@ class StreamingDepthExtractor:
             or min(depth_crop.shape[:2]) < 1
         ):
             raise ValueError("depth_crop must be a nonempty H x W x 3 RGB uint8 array")
-        if self._width is not None and depth_crop.shape[1] != self._width:
-            raise ValueError("strip width changed; call reset() before a new document")
-        tail_height = 0 if self._tail is None else len(self._tail)
-        image = (
-            depth_crop
-            if self._tail is None
-            else np.concatenate((self._tail, depth_crop))
-        )
+
+    def _read_anchors(self, image, origin=0):
         height, width = image.shape[:2]
-        origin = self._offset - tail_height
         gray = np.array(Image.fromarray(image).convert("L"))
         found = []
         for rotation in (0, 1, 3):
@@ -317,6 +311,32 @@ class StreamingDepthExtractor:
                     continue
                 y = origin + self._tick_y(gray, box)
                 found.append(_Anchor(y, value, token.confidence))
+        return found
+
+    def extract_observations(self, depth_crop: np.ndarray) -> dict[str, dict[int, float]]:
+        """Extract one independent task without buffering labels or calibrating.
+
+        Return every confident, unclipped, unambiguous numeric observation,
+        including a lone label. Global calibration/interpolation belongs to the
+        merger. This method never reads or updates this object's stream state.
+        """
+        self._validate_image(depth_crop)
+        candidates = self._merge(self._read_anchors(depth_crop), limit=None)
+        unambiguous = [a for a in candidates if not any(
+            abs(a.y - b.y) <= 3 and a.depth != b.depth for b in candidates
+        )]
+        return {"y_to_depth_map": {a.y: a.depth for a in unambiguous}}
+
+    def extract(self, depth_crop: np.ndarray) -> dict[str, dict[int, float]]:
+        """Consume one strip atomically; failures leave state unchanged."""
+        self._validate_image(depth_crop)
+        if self._width is not None and depth_crop.shape[1] != self._width:
+            raise ValueError("strip width changed; call reset() before a new document")
+        tail_height = 0 if self._tail is None else len(self._tail)
+        image = (depth_crop if self._tail is None
+                 else np.concatenate((self._tail, depth_crop)))
+        found = self._read_anchors(image, self._offset - tail_height)
+        width = image.shape[1]
         candidates = self._merge([*self._candidates, *found])
         # Keep a previously emitted row stable when overlap OCR moves its box
         # by a couple of pixels. Downstream dictionaries cannot retract rows.
