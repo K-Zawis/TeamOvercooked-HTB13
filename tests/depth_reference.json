@@ -1,0 +1,29 @@
+{
+  "description": "Manually read from original depth-column crops with a pixel ruler. Stream-relative y; label centre, not an inferred geological datum. Five-pixel reading tolerance. Only the listed review windows are exhaustively transcribed.",
+  "logs": [
+    {
+      "annotation": "0000000009_d-582_0000020435-0001_log06_fe_5in_md.json",
+      "review_window": [350, 1660],
+      "labels": [[400, 25420], [803, 25440], [1205, 25460], [1603, 25480]],
+      "held_out": {"y": 1205, "depth": 25460, "mask_rows": [1125, 1285]}
+    },
+    {
+      "annotation": "60817411400100_mc761_1_st1_mudlog_1md_17133_22886.json",
+      "review_window": [150, 1860],
+      "labels": [[200, 17200], [400, 17300], [600, 17400], [800, 17500], [1000, 17600], [1200, 17700], [1400, 17800], [1600, 17900], [1800, 18000]],
+      "held_out": {"y": 600, "depth": 17400, "mask_rows": [550, 650]}
+    },
+    {
+      "annotation": "MC765_P011_ST00BP00_5inchTVD_Depth_MudLog_3686-16495ft.json",
+      "review_window": [180, 1810],
+      "labels": [[192, 3520], [392, 3540], [593, 3560], [793, 3580], [993, 3600], [1193, 3620], [1394, 3640], [1594, 3660], [1794, 3680]],
+      "held_out": {"y": 593, "depth": 3560, "mask_rows": [575, 610]}
+    },
+    {
+      "annotation": "Rio_Nueces_3744_Unit_1_222_5IN_MUD.json",
+      "review_window": [75, 1940],
+      "labels": [[103, 8760], [203, 8770], [303, 8780], [403, 8790], [503, 8800], [603, 8810], [703, 8820], [803, 8830], [903, 8840], [1003, 8850], [1103, 8860], [1203, 8870], [1303, 8880], [1403, 8890], [1503, 8900], [1603, 8910], [1703, 8920], [1803, 8930], [1903, 8940]],
+      "held_out": {"y": 403, "depth": 8790, "mask_rows": [370, 435]}
+    }
+  ]
+}
