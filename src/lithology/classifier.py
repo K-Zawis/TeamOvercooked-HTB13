@@ -98,7 +98,8 @@ def classify_features(
                     next_start = index
                     break
         score = float(confidence[start_window:next_start].mean())
-        intervals.append(LithologyInterval(top, bottom, label, score))
+        cluster_id = f"cluster_{names.index(label)}" if label is not None else None
+        intervals.append(LithologyInterval(top, bottom, label, score, cluster_id))
         start_window = next_start
     return intervals
 

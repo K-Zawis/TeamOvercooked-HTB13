@@ -1,18 +1,25 @@
+import csv
+
 import numpy as np
 import pytest
+from PIL import Image
 
 from src.lithology import (
     LegendPattern,
+    LithologyInterval,
     analyze_lithology,
+    annotate_lithology,
     build_legend,
     build_legend_from_boxes,
     classify_features,
     compute_feature_map,
     compute_features,
     find_swatch_boxes,
+    interpret_lithology,
     match_labels,
     read_legend,
     TextToken,
+    write_intervals,
 )
 
 
@@ -149,6 +156,7 @@ def test_feature_map_uses_global_coordinates_and_overlapping_windows():
         "top_y": 4404,
         "bottom_y": 4504,
         "lithology": "horizontal",
+        "cluster_id": "cluster_0",
         "confidence": pytest.approx(intervals[0].confidence),
     }
 
@@ -202,3 +210,88 @@ def test_unknown_pattern_is_not_forced_into_a_named_class():
     )
     assert len(intervals) == 1
     assert intervals[0].lithology is None
+    assert intervals[0].cluster_id is None
+
+
+def test_write_intervals_exports_structured_ml_fields(tmp_path):
+    path = tmp_path / "intervals.csv"
+    intervals = [
+        LithologyInterval(100, 200, "Shale", 0.9, "cluster_0"),
+        LithologyInterval(200, 300, None, 0.4, None),
+    ]
+    write_intervals(path, intervals)
+    with path.open(newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows == [
+        {
+            "top_y": "100", "bottom_y": "200", "cluster_id": "cluster_0",
+            "lithology": "Shale", "confidence": "0.9",
+        },
+        {
+            "top_y": "200", "bottom_y": "300", "cluster_id": "",
+            "lithology": "", "confidence": "0.4",
+        },
+    ]
+
+
+def test_annotate_lithology_draws_global_intervals_on_crop():
+    image = Image.new("RGB", (100, 100), "white")
+    intervals = [
+        LithologyInterval(1010, 1050, "Shale", 0.9, "cluster_0"),
+        LithologyInterval(1050, 1090, "Sandstone", 0.8, "cluster_1"),
+    ]
+    result = annotate_lithology(
+        image,
+        intervals,
+        (10, 1000, 50, 1100),
+        origin=(0, 1000),
+        opacity=255,
+    )
+    pixels = np.asarray(result)
+    assert tuple(pixels[20, 20]) == (40, 160, 60)
+    assert tuple(pixels[70, 20]) == (160, 100, 40)
+    assert tuple(pixels[5, 20]) == (255, 255, 255)
+
+
+def test_interpret_lithology_composes_legend_and_track_analysis():
+    legend_image = np.full((70, 130, 3), 255, np.uint8)
+    boxes = [(10, 5, 50, 35), (75, 5, 115, 35)]
+    for box, name in zip(boxes, ("horizontal", "vertical")):
+        left, top, right, bottom = box
+        legend_image[top:bottom, left] = 0
+        legend_image[top:bottom, right - 1] = 0
+        legend_image[top, left:right] = 0
+        legend_image[bottom - 1, left:right] = 0
+        legend_image[top + 2:bottom - 2, left + 2:right - 2] = pattern(
+            name, bottom - top - 4, right - left - 4
+        )
+
+    class Recognizer:
+        def recognize(self, pixels):
+            return [
+                TextToken("Shale", 0.9, (15, 40, 46, 49)),
+                TextToken("Sandstone", 0.9, (69, 40, 120, 49)),
+            ]
+
+    track = np.concatenate([
+        pattern("horizontal", height=128),
+        pattern("vertical", height=128),
+    ])
+    result = interpret_lithology(
+        track,
+        legend_image,
+        global_y=1000,
+        recognizer=Recognizer(),
+        window_height=48,
+        stride=8,
+        transition_penalty=0.04,
+    )
+    assert [entry.name for entry in result.legend] == ["Shale", "Sandstone"]
+    assert [interval.lithology for interval in result.intervals] == [
+        "Shale", "Sandstone"
+    ]
+    assert [interval.cluster_id for interval in result.intervals] == [
+        "cluster_0", "cluster_1"
+    ]
+    assert result.intervals[0].top_y == 1000
+    assert result.intervals[-1].bottom_y == 1256

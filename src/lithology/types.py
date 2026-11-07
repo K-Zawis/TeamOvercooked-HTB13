@@ -98,6 +98,7 @@ class LithologyInterval:
     bottom_y: int
     lithology: str | None
     confidence: float
+    cluster_id: str | None = None
 
     def __post_init__(self) -> None:
         if any(isinstance(value, bool) or not isinstance(value, int)
@@ -109,6 +110,10 @@ class LithologyInterval:
             not isinstance(self.lithology, str) or not self.lithology.strip()
         ):
             raise ValueError("lithology must be a nonempty string or None")
+        if self.cluster_id is not None and (
+            not isinstance(self.cluster_id, str) or not self.cluster_id.strip()
+        ):
+            raise ValueError("cluster_id must be a nonempty string or None")
         if not math.isfinite(self.confidence) or not 0 <= self.confidence <= 1:
             raise ValueError("confidence must be finite and in [0, 1]")
 
@@ -117,5 +122,20 @@ class LithologyInterval:
             "top_y": self.top_y,
             "bottom_y": self.bottom_y,
             "lithology": self.lithology,
+            "cluster_id": self.cluster_id,
             "confidence": self.confidence,
         }
+
+
+@dataclass(frozen=True)
+class LithologyResult:
+    """Legend prototypes and classified intervals for one lithology crop."""
+
+    legend: tuple[LegendPattern, ...]
+    intervals: tuple[LithologyInterval, ...]
+
+    def __post_init__(self) -> None:
+        if not self.legend:
+            raise ValueError("result legend cannot be empty")
+        if not self.intervals:
+            raise ValueError("result intervals cannot be empty")
