@@ -54,22 +54,28 @@ class PipelineRedisClient:
         )
 
     def init_consumer_groups(self) -> None:
-        """Creates required Redis task streams and consumer groups idempotently.
+        """Initializes consumer groups for depth, lithology, and merge streams.
 
-        Raises:
-            redis.exceptions.ResponseError: If stream creation fails with an unexpected error other than BUSYGROUP.
+        Uses mkstream=True so streams are initialized if they do not exist yet.
+        Ignores BUSYGROUP errors if groups have already been created.
         """
-        mappings = [
+        groups = [
             (self.STREAM_DEPTH, self.GROUP_DEPTH),
             (self.STREAM_LITH, self.GROUP_LITH),
             (self.STREAM_MERGE, self.GROUP_MERGE),
         ]
-        for stream, group in mappings:
+        for stream, group in groups:
             try:
-                self.r.xgroup_create(stream, group, id="0", mkstream=True)
-            except redis.exceptions.ResponseError as e:
-                if "BUSYGROUP" not in str(e):
-                    raise e
+                self.r.xgroup_create(
+                    name=stream,
+                    groupname=group,
+                    id="0",
+                    mkstream=True,
+                )
+            except redis.exceptions.ResponseError as exc:
+                if "BUSYGROUP" in str(exc):
+                    continue
+                raise
 
     # -------------------------------------------------------------------------
     # PERSISTENT PIPELINE ORCHESTRATION STATE
@@ -450,23 +456,28 @@ class PipelineRedisClient:
             Tuple[str, Dict[str, Any]]: Tuple of (message_id, parsed_payload_dict) on task arrival.
         """
         while True:
-            messages = self.r.xreadgroup(
-                groupname=group,
-                consumername=consumer_name,
-                streams={stream: ">"},
-                count=1,
-                block=block_ms,
-            )
+            try:
+                messages = self.r.xreadgroup(
+                    groupname=group,
+                    consumername=consumer_name,
+                    streams={stream: ">"},
+                    count=1,
+                    block=block_ms,
+                )
+            except redis.exceptions.ResponseError as exc:
+                if "NOGROUP" in str(exc):
+                    # Auto-recreate stream & group if Redis was flushed or stream was wiped
+                    self.init_consumer_groups()
+                    continue
+                raise
+
             if not messages:
                 continue
 
-            _, stream_messages = messages[0]
-            if not stream_messages:
-                continue
-
-            for msg_id, fields in stream_messages:
-                payload = json.loads(fields["data"])
-                yield msg_id, payload
+            for _, entries in messages:
+                for msg_id, fields in entries:
+                    payload = json.loads(fields["data"])
+                    yield msg_id, payload
 
     def read_task(
         self,

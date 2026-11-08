@@ -1,25 +1,21 @@
 SHELL := /bin/bash
 
 # Image names
-DISPATCHER_IMG   := well_log_dispatcher
-DEPTH_IMG        := well_log_worker_depth
-CLUSTER_LITH_IMG := well_log_worker_cluster_lithology
-MAPPING_LITH_IMG := well_log_worker_mapping_lithology
-MERGER_IMG       := well_log_merger
+DISPATCHER_IMG := well_log_dispatcher
+DEPTH_IMG      := well_log_worker_depth
+LITH_IMG       := well_log_worker_lithology
 
 # Dockerfile paths
-DOCKERFILE_DISPATCHER   := build/dispatcher/Dockerfile
-DOCKERFILE_DEPTH        := build/depth/Dockerfile
-DOCKERFILE_CLUSTER_LITH := build/cluster_lithology/Dockerfile
-DOCKERFILE_MAPPING_LITH := build/mapping_lithology/Dockerfile
-DOCKERFILE_MERGER       := build/merger/Dockerfile
+DOCKERFILE_DISPATCHER := build/dispatcher/Dockerfile
+DOCKERFILE_DEPTH      := build/depth/Dockerfile
+DOCKERFILE_LITH       := build/lithology/Dockerfile
 
-.PHONY: all build build-dispatcher build-depth build-cluster-lith build-mapping-lith build-merger up down clean logs status dashboard reset live batch
+.PHONY: all build build-dispatcher build-depth build-lith up down clean logs status dashboard reset live batch
 
-all: build up
+all: build up logs
 
 ## Build targets
-build: build-dispatcher build-depth build-cluster-lith build-mapping-lith build-merger
+build: build-dispatcher build-depth build-lith
 
 build-dispatcher:
 	@echo "--> Building $(DISPATCHER_IMG)..."
@@ -29,21 +25,13 @@ build-depth:
 	@echo "--> Building $(DEPTH_IMG)..."
 	docker build --network=host -t $(DEPTH_IMG) -f $(DOCKERFILE_DEPTH) ./
 
-build-cluster-lith:
-	@echo "--> Building $(CLUSTER_LITH_IMG)..."
-	docker build --network=host -t $(CLUSTER_LITH_IMG) -f $(DOCKERFILE_CLUSTER_LITH) ./
-
-build-mapping-lith:
-	@echo "--> Building $(MAPPING_LITH_IMG)..."
-	docker build --network=host -t $(MAPPING_LITH_IMG) -f $(DOCKERFILE_MAPPING_LITH) ./
-
-build-merger:
-	@echo "--> Building $(MERGER_IMG)..."
-	docker build --network=host -t $(MERGER_IMG) -f $(DOCKERFILE_MERGER) ./
+build-lith:
+	@echo "--> Building $(LITH_IMG)..."
+	docker build --network=host -t $(LITH_IMG) -f $(DOCKERFILE_LITH) ./
 
 ## Runtime targets
 up:
-	@echo "--> Starting full cluster..."
+	@echo "--> Starting cluster..."
 	docker compose up -d
 
 down:

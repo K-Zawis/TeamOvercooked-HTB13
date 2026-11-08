@@ -60,6 +60,26 @@ services:
       redis:
         condition: service_healthy
 
+  worker-lithology:
+    build:
+      context: .
+      dockerfile: build/lithology/Dockerfile
+    image: well_log_worker_lithology
+    container_name: well_log_worker_lithology
+    environment:
+      - REDIS_HOST=172.28.0.2
+      - REDIS_PORT=6379
+      - DATA_DIR=/data
+    volumes:
+      - ./src:/app/src
+      - ./dataset:/data:ro
+    networks:
+      well_log_net:
+        ipv4_address: 172.28.0.30
+    depends_on:
+      redis:
+        condition: service_healthy
+
   # worker-depth:
   #   build:
   #     context: .

@@ -1,6 +1,9 @@
 """Classify a lithology track against named patterns from its own legend."""
 
+from __future__ import annotations
+
 import math
+from typing import Sequence
 
 lazy import numpy as np
 
@@ -8,38 +11,34 @@ from .features import compute_feature_map
 from .types import FeatureWindow, LegendPattern, LithologyInterval
 
 
-def _cosine_distance(left: np.ndarray, right: np.ndarray) -> float:
-    if left.shape != right.shape:
-        raise ValueError("legend and track features use incompatible dimensions")
-    denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
-    if not denominator:
-        return 1.0
-    similarity = float(np.dot(left, right) / denominator)
-    return float(np.clip(1.0 - similarity, 0.0, 2.0))
-
-
 def _decode(costs: np.ndarray, transition_penalty: float) -> np.ndarray:
-    count, states = costs.shape
-    totals = np.empty_like(costs)
-    previous = np.zeros((count, states), dtype=np.intp)
-    totals[0] = costs[0]
-    indices = np.arange(states)
-    for row in range(1, count):
-        transitions = totals[row - 1][:, None] + transition_penalty * (
-            indices[:, None] != indices[None, :]
-        )
-        previous[row] = np.argmin(transitions, axis=0)
-        totals[row] = costs[row] + transitions[previous[row], indices]
-    path = np.empty(count, dtype=np.intp)
-    path[-1] = int(np.argmin(totals[-1]))
-    for row in range(count - 1, 0, -1):
-        path[row - 1] = previous[row, path[row]]
+    """Viterbi decoding for optimal lithology sequence with transition penalty."""
+    num_windows, num_states = costs.shape
+    accumulated_costs = np.empty_like(costs)
+    backpointers = np.zeros((num_windows, num_states), dtype=np.intp)
+
+    accumulated_costs[0] = costs[0]
+
+    # Precompute the static state transition penalty matrix once
+    penalty_matrix = transition_penalty * (1.0 - np.eye(num_states, dtype=np.float64))
+
+    for step in range(1, num_windows):
+        # Shape: (prev_state, curr_state)
+        transition_costs = accumulated_costs[step - 1][:, None] + penalty_matrix
+        backpointers[step] = np.argmin(transition_costs, axis=0)
+        accumulated_costs[step] = costs[step] + np.min(transition_costs, axis=0)
+
+    path = np.empty(num_windows, dtype=np.intp)
+    path[-1] = int(np.argmin(accumulated_costs[-1]))
+    for step in range(num_windows - 1, 0, -1):
+        path[step - 1] = backpointers[step, path[step]]
+
     return path
 
 
 def classify_features(
-    feature_map: list[FeatureWindow] | tuple[FeatureWindow, ...],
-    legend: list[LegendPattern] | tuple[LegendPattern, ...],
+    feature_map: Sequence[FeatureWindow],
+    legend: Sequence[LegendPattern],
     *,
     transition_penalty: float = 0.08,
     unknown_distance: float = 0.38,
@@ -50,16 +49,18 @@ def classify_features(
         raise ValueError("feature_map must contain at least one window")
     if any(not isinstance(window, FeatureWindow) for window in windows):
         raise ValueError("feature_map must contain FeatureWindow values")
-    if any(right.top_y < left.top_y or right.bottom_y <= left.bottom_y
-           for left, right in zip(windows, windows[1:])):
+    if any(
+        curr.top_y < prev.top_y or curr.bottom_y <= prev.bottom_y
+        for prev, curr in zip(windows, windows[1:])
+    ):
         raise ValueError("feature windows must be ordered from top to bottom")
-    if any(right.top_y >= left.bottom_y
-           for left, right in zip(windows, windows[1:])):
+    if any(curr.top_y >= prev.bottom_y for prev, curr in zip(windows, windows[1:])):
         raise ValueError("feature windows must overlap")
     if not math.isfinite(transition_penalty) or transition_penalty < 0:
         raise ValueError("transition_penalty must be finite and nonnegative")
     if not math.isfinite(unknown_distance) or not 0 < unknown_distance <= 2:
         raise ValueError("unknown_distance must be in (0, 2]")
+
     patterns = tuple(legend)
     if not patterns:
         raise ValueError("legend must contain at least one named pattern")
@@ -67,46 +68,65 @@ def classify_features(
     if len(set(names)) != len(names):
         raise ValueError("legend names must be unique")
 
-    distances = np.empty((len(windows), len(patterns)), dtype=np.float64)
-    for row, window in enumerate(windows):
-        distances[row] = [
-            _cosine_distance(window.features.combined, pattern.features.combined)
-            for pattern in patterns
-        ]
-    costs = np.column_stack(
-        [distances, np.full(len(windows), unknown_distance, dtype=np.float64)]
-    )
-    states = _decode(costs, transition_penalty)
-    labels = [names[state] if state < len(names) else None for state in states]
-    confidence = np.clip(1.0 - distances.min(axis=1), 0.0, 1.0)
+    # Stack descriptors into 2D matrices: (num_windows, dim) and (num_patterns, dim)
+    window_matrix = np.vstack([w.features.combined for w in windows])
+    pattern_matrix = np.vstack([p.features.combined for p in patterns])
 
-    centers = np.array([(window.top_y + window.bottom_y) / 2 for window in windows])
+    # Both feature sets are L2 unit-normalized in features.py; cosine distance is 1.0 - (W @ P.T)
+    cosine_sim = np.clip(np.dot(window_matrix, pattern_matrix.T), -1.0, 1.0)
+    distances = np.clip(1.0 - cosine_sim, 0.0, 2.0)
+
+    # Append unknown state column
+    unknown_col = np.full((len(windows), 1), unknown_distance, dtype=np.float64)
+    costs = np.hstack([distances, unknown_col])
+
+    # Dynamic programming sequence decode
+    state_sequence = _decode(costs, transition_penalty)
+    labels = [names[s] if s < len(names) else None for s in state_sequence]
+    confidence_per_window = np.clip(1.0 - distances.min(axis=1), 0.0, 1.0)
+
+    # Identify interval transition boundaries
+    centers = np.array([(w.top_y + w.bottom_y) / 2 for w in windows])
     boundaries = [windows[0].top_y]
-    for index in range(1, len(windows)):
-        if labels[index] != labels[index - 1]:
-            boundaries.append(round((centers[index - 1] + centers[index]) / 2))
-    boundaries.append(windows[-1].bottom_y)
+    change_indices = [0]
 
-    intervals = []
-    start_window = 0
-    for interval_index, (top, bottom) in enumerate(zip(boundaries, boundaries[1:])):
-        label = labels[start_window]
-        next_start = len(windows)
-        if interval_index + 1 < len(boundaries) - 1:
-            for index in range(start_window + 1, len(windows)):
-                if labels[index] != label:
-                    next_start = index
-                    break
-        score = float(confidence[start_window:next_start].mean())
-        cluster_id = f"cluster_{names.index(label)}" if label is not None else None
-        intervals.append(LithologyInterval(top, bottom, label, score, cluster_id))
-        start_window = next_start
+    for idx in range(1, len(windows)):
+        if labels[idx] != labels[idx - 1]:
+            boundaries.append(round((centers[idx - 1] + centers[idx]) / 2))
+            change_indices.append(idx)
+    boundaries.append(windows[-1].bottom_y)
+    change_indices.append(len(windows))
+
+    # Fast O(1) cluster lookup mapping
+    name_to_cluster = {name: f"cluster_{i}" for i, name in enumerate(names)}
+
+    intervals: list[LithologyInterval] = []
+    for seg_idx in range(len(boundaries) - 1):
+        top_y = boundaries[seg_idx]
+        bottom_y = boundaries[seg_idx + 1]
+        w_start = change_indices[seg_idx]
+        w_end = change_indices[seg_idx + 1]
+
+        label = labels[w_start]
+        avg_score = float(confidence_per_window[w_start:w_end].mean())
+        cluster_id = name_to_cluster.get(label) if label is not None else None
+
+        intervals.append(
+            LithologyInterval(
+                top_y=top_y,
+                bottom_y=bottom_y,
+                lithology=label,
+                confidence=avg_score,
+                cluster_id=cluster_id,
+            )
+        )
+
     return intervals
 
 
 def analyze_lithology(
-    image,
-    legend: list[LegendPattern] | tuple[LegendPattern, ...],
+    image: np.ndarray,
+    legend: Sequence[LegendPattern],
     *,
     global_y: int = 0,
     window_height: int = 64,
@@ -114,13 +134,7 @@ def analyze_lithology(
     transition_penalty: float = 0.08,
     unknown_distance: float = 0.38,
 ) -> list[LithologyInterval]:
-    """Compute track features and return contiguous global-Y intervals.
-
-    Small overlapping windows are compared with named legend patterns. Dynamic
-    programming discourages isolated label changes, and adjacent equal labels
-    are collapsed into half-open intervals. ``None`` represents an unmatched
-    pattern.
-    """
+    """Compute track features and return contiguous classified intervals."""
     feature_map = compute_feature_map(
         image,
         global_y=global_y,
