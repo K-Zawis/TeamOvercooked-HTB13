@@ -1,3 +1,5 @@
+"""Final reduction worker: interpolates depth, merges lithology seams, and exports results."""
+
 from __future__ import annotations
 
 import csv
@@ -63,7 +65,10 @@ class WellLogMergerWorker:
         self,
         y_to_depth_map: Dict[int, float],
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Filters OCR depth points to enforce strictly increasing depth down the log.
+        """Filters OCR depth points using 1D RANSAC consensus on physical pitch.
+
+        Eliminates scale track noise (e.g. 0-100 markings) and OCR blunders
+        by enforcing consensus with the dominant well log pixel pitch.
 
         Args:
             y_to_depth_map (Dict[int, float]): Mapping of vertical pixel Y positions to detected depths.
@@ -76,28 +81,76 @@ class WellLogMergerWorker:
             depth_vals = np.array(list(y_to_depth_map.values()), dtype=np.float64)
             return y_coords, depth_vals
 
-        sorted_points = sorted(y_to_depth_map.items(), key=lambda item: item[0])
+        sorted_items = sorted(y_to_depth_map.items(), key=lambda item: item[0])
+        raw_y = np.array([float(item[0]) for item in sorted_items], dtype=np.float64)
+        raw_d = np.array([float(item[1]) for item in sorted_items], dtype=np.float64)
+        num_points = len(raw_y)
+
+        # 1. Estimate dominant physical pitch (ft/pixel) via median pairwise slope
+        candidate_slopes: List[float] = []
+        for i in range(num_points):
+            for j in range(i + 1, min(i + 20, num_points)):
+                delta_y = raw_y[j] - raw_y[i]
+                delta_d = raw_d[j] - raw_d[i]
+                if 300 < delta_y < 10000 and delta_d > 0:
+                    slope = delta_d / delta_y
+                    # Standard well log pitch boundaries: 0.05 to 2.0 ft/pixel
+                    if 0.05 <= slope <= 2.0:
+                        candidate_slopes.append(slope)
+
+        if not candidate_slopes:
+            logger.warning(
+                "No consistent depth slope detected; falling back to raw points"
+            )
+            return raw_y, raw_d
+
+        median_slope = float(np.median(candidate_slopes))
+        logger.info(
+            "Estimated log pitch: %.4f ft/pixel (%.1f pixels per 100 ft)",
+            median_slope,
+            100.0 / median_slope if median_slope > 0 else 0.0,
+        )
+
+        # 2. 1D RANSAC to identify the intercept with maximum inlier consensus
+        candidate_intercepts = raw_d - median_slope * raw_y
+        best_inlier_mask = np.zeros(num_points, dtype=bool)
+        max_inlier_count = 0
+
+        # Typical well log grid lines are spaced 100 ft apart; 50 ft tolerance prevents grid aliasing
+        tolerance = 50.0
+        for test_intercept in candidate_intercepts:
+            inlier_mask = np.abs(candidate_intercepts - test_intercept) < tolerance
+            inlier_count = int(np.sum(inlier_mask))
+            if inlier_count > max_inlier_count:
+                max_inlier_count = inlier_count
+                best_inlier_mask = inlier_mask
+
+        inlier_y = raw_y[best_inlier_mask]
+        inlier_d = raw_d[best_inlier_mask]
+
+        # 3. Final safety check: enforce strict monotonicity on remaining inliers
         valid_y: List[float] = []
         valid_depths: List[float] = []
+        last_accepted_depth = -float("inf")
 
-        last_depth = -float("inf")
-        for y_pixel, depth_val in sorted_points:
-            # Physical well logs strictly increase in depth with vertical pixel Y
-            if depth_val > last_depth:
-                valid_y.append(float(y_pixel))
-                valid_depths.append(float(depth_val))
-                last_depth = depth_val
-            else:
-                logger.warning(
-                    "Filtered non-monotonic depth OCR outlier: Y=%s depth=%s (previous=%s)",
-                    y_pixel,
-                    depth_val,
-                    last_depth,
-                )
+        sort_indices = np.argsort(inlier_y)
+        for idx in sort_indices:
+            y_val = float(inlier_y[idx])
+            d_val = float(inlier_d[idx])
+            if d_val > last_accepted_depth:
+                valid_y.append(y_val)
+                valid_depths.append(d_val)
+                last_accepted_depth = d_val
 
-        return (
-            np.array(valid_y, dtype=np.float64),
-            np.array(valid_depths, dtype=np.float64),
+        rejected_count = num_points - len(valid_y)
+        logger.info(
+            "Depth consensus filtering: retained %d inliers, rejected %d noise points/outliers",
+            len(valid_y),
+            rejected_count,
+        )
+
+        return np.array(valid_y, dtype=np.float64), np.array(
+            valid_depths, dtype=np.float64
         )
 
     def interpolate_depth_curve(
@@ -117,17 +170,13 @@ class WellLogMergerWorker:
             np.ndarray: Array of interpolated measured depths aligned with y_query.
         """
         if len(ref_y) == 0:
-            # Fallback if no OCR depth markers were captured
             return y_query
 
         if len(ref_y) == 1:
-            # Single depth anchor fallback (assumes nominal 0.1 depth units per pixel)
             return ref_depths[0] + (y_query - ref_y[0]) * 0.1
 
-        # Interior linear interpolation
         depths = np.interp(y_query, ref_y, ref_depths)
 
-        # Linear boundary extrapolation
         dy_top = ref_y[1] - ref_y[0]
         if dy_top > 0:
             slope_top = (ref_depths[1] - ref_depths[0]) / dy_top
@@ -184,7 +233,6 @@ class WellLogMergerWorker:
                 )
             )
 
-        # Merge touching/overlapping intervals with identical classifications
         return merge_intervals(intervals)
 
     # -------------------------------------------------------------------------

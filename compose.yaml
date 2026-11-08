@@ -36,6 +36,7 @@ services:
       - BATCH_SIZE=5
       - DATA_DIR=/data
       - OUTPUT_DIR=/output
+      # - DEMO_FILE="60807402860000_gb506#2_md_mudlog.tif"
     volumes:
       - ./src:/app/src
       - ./scripts:/app/scripts
@@ -80,48 +81,48 @@ services:
       redis:
         condition: service_healthy
 
-  # worker-depth:
-  #   build:
-  #     context: .
-  #     dockerfile: build/depth/Dockerfile
-  #   image: well_log_worker_depth
-  #   container_name: well_log_worker_depth
-  #   environment:
-  #     - REDIS_HOST=172.28.0.2
-  #     - REDIS_PORT=6379
-  #     - SLICE_HEIGHT=2000
-  #     - DATA_DIR=/data
-  #   volumes:
-  #     - ./src:/app/src
-  #     - ./dataset:/data:ro
-  #   networks:
-  #     well_log_net:
-  #       ipv4_address: 172.28.0.20
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
+  worker-depth:
+    build:
+      context: .
+      dockerfile: build/depth/Dockerfile
+    image: well_log_worker_depth
+    container_name: well_log_worker_depth
+    environment:
+      - REDIS_HOST=172.28.0.2
+      - REDIS_PORT=6379
+      - SLICE_HEIGHT=2000
+      - DATA_DIR=/data
+    volumes:
+      - ./src:/app/src
+      - ./dataset:/data:ro
+    networks:
+      well_log_net:
+        ipv4_address: 172.28.0.20
+    depends_on:
+      redis:
+        condition: service_healthy
 
-  # merger:
-  #   build:
-  #     context: .
-  #     dockerfile: build/merger/Dockerfile
-  #   image: well_log_merger
-  #   container_name: well_log_merger
-  #   environment:
-  #     - REDIS_HOST=172.28.0.2
-  #     - REDIS_PORT=6379
-  #     - DATA_DIR=/data
-  #     - OUTPUT_DIR=/output
-  #   volumes:
-  #     - ./src:/app/src
-  #     - ./dataset:/data:ro
-  #     - ./output:/output
-  #   networks:
-  #     well_log_net:
-  #       ipv4_address: 172.28.0.40
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
+  merger:
+    build:
+      context: .
+      dockerfile: build/merger/Dockerfile
+    image: well_log_merger
+    container_name: well_log_merger
+    environment:
+      - REDIS_HOST=172.28.0.2
+      - REDIS_PORT=6379
+      - DATA_DIR=/data
+      - OUTPUT_DIR=/output
+    volumes:
+      - ./src:/app/src
+      - ./dataset:/data:ro
+      - ./output:/output
+    networks:
+      well_log_net:
+        ipv4_address: 172.28.0.40
+    depends_on:
+      redis:
+        condition: service_healthy
 
 networks:
   well_log_net:

@@ -4,18 +4,20 @@ SHELL := /bin/bash
 DISPATCHER_IMG := well_log_dispatcher
 DEPTH_IMG      := well_log_worker_depth
 LITH_IMG       := well_log_worker_lithology
+MERGER_IMG     := well_log_merger
 
 # Dockerfile paths
 DOCKERFILE_DISPATCHER := build/dispatcher/Dockerfile
 DOCKERFILE_DEPTH      := build/depth/Dockerfile
 DOCKERFILE_LITH       := build/lithology/Dockerfile
+DOCKERFILE_MERGER     := build/merger/Dockerfile
 
-.PHONY: all build build-dispatcher build-depth build-lith up down clean logs status dashboard reset live batch
+.PHONY: all build build-dispatcher build-depth build-lith build-merger up down clean logs status dashboard reset live batch
 
 all: build up logs
 
 ## Build targets
-build: build-dispatcher build-depth build-lith
+build: build-dispatcher build-depth build-lith build-merger
 
 build-dispatcher:
 	@echo "--> Building $(DISPATCHER_IMG)..."
@@ -28,6 +30,10 @@ build-depth:
 build-lith:
 	@echo "--> Building $(LITH_IMG)..."
 	docker build --network=host -t $(LITH_IMG) -f $(DOCKERFILE_LITH) ./
+
+build-merger:
+	@echo "--> Building $(MERGER_IMG)..."
+	docker build --network=host -t $(MERGER_IMG) -f $(DOCKERFILE_MERGER) ./
 
 ## Runtime targets
 up:
