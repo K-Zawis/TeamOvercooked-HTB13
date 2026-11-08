@@ -101,47 +101,6 @@ services:
   #     redis:
   #       condition: service_healthy
 
-  # worker-cluster-lithology:
-  #   build:
-  #     context: .
-  #     dockerfile: build/cluster_lithology/Dockerfile
-  #   image: well_log_worker_cluster_lithology
-  #   container_name: well_log_worker_cluster_lithology
-  #   environment:
-  #     - REDIS_HOST=172.28.0.2
-  #     - REDIS_PORT=6379
-  #     - SLICE_HEIGHT=2000
-  #     - DATA_DIR=/data
-  #   volumes:
-  #     - ./src:/app/src
-  #     - ./dataset:/data:ro
-  #   networks:
-  #     well_log_net:
-  #       ipv4_address: 172.28.0.30
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-
-  # worker-mapping-lithology:
-  #   build:
-  #     context: .
-  #     dockerfile: build/mapping_lithology/Dockerfile
-  #   image: well_log_worker_mapping_lithology
-  #   container_name: well_log_worker_mapping_lithology
-  #   environment:
-  #     - REDIS_HOST=172.28.0.2
-  #     - REDIS_PORT=6379
-  #     - DATA_DIR=/data
-  #   volumes:
-  #     - ./src:/app/src
-  #     - ./dataset:/data:ro
-  #   networks:
-  #     well_log_net:
-  #       ipv4_address: 172.28.0.31
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-
   # merger:
   #   build:
   #     context: .
