@@ -16,6 +16,7 @@ dependencies = [
     "imagecodecs>=2024.12.30",
     "redis>=5",
     "uvicorn>=0.34",
+    "pytesseract>=0.3.13",
 ]
 
 [dependency-groups]

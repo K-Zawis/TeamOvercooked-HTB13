@@ -7,7 +7,8 @@ import pytest
 
 
 @pytest.mark.parametrize("module", [
-    "worker_depth", "depth_extraction", "models", "validate_depth", "src.dispatcher",
+    "src.depth", "src.depth.worker", "src.depth.extraction", "src.depth.validation",
+    "src.worker_depth", "src.dispatcher",
     "src.worker_lithology",
 ])
 def test_import_defers_heavy_dependencies(module):
@@ -15,7 +16,7 @@ def test_import_defers_heavy_dependencies(module):
 import importlib
 import sys
 importlib.import_module({module!r})
-heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'redis'}}
+heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'rasterio', 'redis'}}
 loaded = heavy.intersection(sys.modules)
 assert not loaded, f'Unexpected eager imports: {{loaded}}'
 """
@@ -23,7 +24,7 @@ assert not loaded, f'Unexpected eager imports: {{loaded}}'
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("module", ["worker_depth", "validate_depth", "src.worker_lithology"])
+@pytest.mark.parametrize("module", ["src.depth.validation", "src.worker_lithology"])
 def test_cli_help_defers_heavy_dependencies(module):
     code = f"""
 import runpy
@@ -35,7 +36,7 @@ except SystemExit as exc:
     assert exc.code == 0
 else:
     raise AssertionError('help did not exit')
-heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'redis'}}
+heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'rasterio', 'redis'}}
 loaded = heavy.intersection(sys.modules)
 assert not loaded, f'Unexpected eager imports: {{loaded}}'
 """

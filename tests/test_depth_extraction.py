@@ -1,3 +1,4 @@
+import io
 import os
 import shutil
 import subprocess
@@ -7,13 +8,36 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw, ImageFont
 
-from depth_extraction import (
+from src.depth.extraction import (
     DepthExtractionError,
     OCRToken,
     TesseractOCR,
+    _grayscale,
     _number,
 )
-from models import DepthExtractor
+from src.depth import DepthExtractor
+
+
+def test_numpy_grayscale_preserves_rgb_luminance():
+    rgb = np.random.default_rng(17).integers(0, 256, (100, 80, 3), dtype=np.uint8)
+    np.testing.assert_array_equal(_grayscale(rgb), np.array(Image.fromarray(rgb).convert("L")))
+
+
+@pytest.mark.parametrize("scale", [1, 2, 3])
+def test_tesseract_receives_bounded_graymap_with_white_border(scale):
+    rgb = np.full((100, 80, 3), 255, dtype=np.uint8)
+    rgb[30:70, 20:60] = 0
+    result = subprocess.CompletedProcess([], 0, b"text\tconf\tleft\ttop\twidth\theight\n", b"")
+    with patch("src.depth.extraction.subprocess.run", return_value=result) as run:
+        assert TesseractOCR(scale=scale).recognize(rgb) == []
+    encoded = run.call_args.kwargs["input"]
+    assert encoded.startswith(b"P5\n")
+    with Image.open(io.BytesIO(encoded)) as image:
+        pixels = np.array(image)
+    assert pixels.shape == (100 * scale + 24, 80 * scale + 24)
+    assert np.all(pixels[:12] == 255) and np.all(pixels[-12:] == 255)
+    assert np.all(pixels[:, :12] == 255) and np.all(pixels[:, -12:] == 255)
+    assert pixels[len(pixels)//2, pixels.shape[1]//2] == 0
 
 
 def token(y, value, confidence=0.95, box=None):
@@ -306,11 +330,11 @@ def test_many_strips_expire_old_support_and_keep_state_bounded():
 
 def test_backend_errors_and_tsv_coordinates():
     backend = TesseractOCR()
-    with patch("depth_extraction.subprocess.run", side_effect=FileNotFoundError):
+    with patch("src.depth.extraction.subprocess.run", side_effect=FileNotFoundError):
         with pytest.raises(DepthExtractionError, match="install tesseract"):
             backend.recognize(strip())
     with patch(
-        "depth_extraction.subprocess.run",
+        "src.depth.extraction.subprocess.run",
         side_effect=subprocess.TimeoutExpired("tesseract", 30),
     ):
         with pytest.raises(DepthExtractionError, match="execution failed"):
@@ -318,7 +342,7 @@ def test_backend_errors_and_tsv_coordinates():
     # OCR quotes must be literal: CSV quoting would swallow subsequent TSV rows.
     tsv = b'text\tconf\tleft\ttop\twidth\theight\n"\t50\t0\t0\t2\t2\n1234\t95\t32\t52\t60\t20\n'
     with patch(
-        "depth_extraction.subprocess.run",
+        "src.depth.extraction.subprocess.run",
         return_value=subprocess.CompletedProcess([], 0, tsv, b""),
     ):
         assert backend.recognize(strip())[-1] == OCRToken(
@@ -328,7 +352,7 @@ def test_backend_errors_and_tsv_coordinates():
         subprocess.CompletedProcess([], 1, b"", b"bad language data"),
         subprocess.CompletedProcess([], 0, b"not tsv", b""),
     ]:
-        with patch("depth_extraction.subprocess.run", return_value=result):
+        with patch("src.depth.extraction.subprocess.run", return_value=result):
             with pytest.raises(DepthExtractionError):
                 backend.recognize(strip())
 

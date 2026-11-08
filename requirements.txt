@@ -45,9 +45,13 @@ numpy==2.5.4
 opentelemetry-api==1.45.2
     # via fastapi
 packaging==26.3
-    # via zarr
+    # via
+    #   pytesseract
+    #   zarr
 pillow==13.0.0
-    # via team-overcooked-htb13
+    # via
+    #   pytesseract
+    #   team-overcooked-htb13
 psutil==7.2.2
     # via team-overcooked-htb13
 pydantic==2.14.3
@@ -56,6 +60,8 @@ pydantic==2.14.3
     #   team-overcooked-htb13
 pydantic-core==2.50.4
     # via pydantic
+pytesseract==0.3.13
+    # via team-overcooked-htb13
 pyparsing==3.3.3
     # via rasterio
 pyyaml==6.0.3

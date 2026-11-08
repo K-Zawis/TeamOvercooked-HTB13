@@ -2,20 +2,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from depth_staging import commit_depth_result, staging_keys
-from redis_stub import StubRedisClient
+from src.depth.staging import commit_depth_result, staging_keys
 
 
-@pytest.fixture(params=["stub", "lua"])
-def client(request):
-    if request.param == "stub":
-        return StubRedisClient()
+@pytest.fixture
+def client():
     fakeredis = pytest.importorskip("fakeredis")
     return fakeredis.FakeRedis(decode_responses=True)
 
 
 def hgetall(client, name):
-    return dict(client.hashes.get(name, {})) if isinstance(client, StubRedisClient) else client.hgetall(name)
+    return client.hgetall(name)
 
 
 def test_results_counter_and_dedup_committed_together(client):
@@ -23,7 +20,7 @@ def test_results_counter_and_dedup_committed_together(client):
     client.hset(meta, mapping={"total_depth": "2", "completed_lith": "1"})
     assert commit_depth_result(client, "0000000009", "task-a", {17200: 4100.0, 25480: 4200.0})
     assert hgetall(client, depths) == {"17200": "4100.0", "25480": "4200.0"}
-    assert hgetall(client, meta) == {"total_depth": "2", "completed_lith": "1", "completed_depth": "1"}
+    assert hgetall(client, meta) == {"total_depth": "2", "completed_lith": "1", "completed_depth": "1", "completed_depth_chunks": "1"}
     assert client.sismember(done, "task-a")
     # A second dispatch/retry cannot replace results or increment the counter.
     assert not commit_depth_result(client, "0000000009", "task-a", {17200: 9999})
@@ -84,3 +81,12 @@ def test_wrong_key_type_rejected_before_writes(client, key_index):
         assert hgetall(client, meta) == {}
     if key_index != 2:
         assert not client.sismember(done, "new")
+
+
+def test_invalid_slice_key_prevents_partial_result_publication(client):
+    client.hset("log:a:slices:depth:completed", mapping={"wrong": "type"})
+    with pytest.raises(Exception):
+        commit_depth_result(client, "a", "new", {10: 100}, slice_bounds=(0, 2000))
+    assert client.hgetall("log:a:depths") == {}
+    assert client.hgetall("log:a:meta") == {}
+    assert not client.sismember(staging_keys("a")[2], "new")
