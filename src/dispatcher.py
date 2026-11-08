@@ -2,6 +2,7 @@ import os
 import json
 import hashlib
 import threading
+from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
@@ -13,12 +14,22 @@ from src.redis_client import PipelineRedisClient, LogStatus
 
 
 class DispatcherMode(str, Enum):
+    """Execution modes for the task dispatcher service."""
+
     IDLE = "IDLE"
     LIVE = "LIVE"
     BATCH = "BATCH"
 
 
 def compute_sha256(path: Path) -> str:
+    """Computes the SHA-256 cryptographic digest of a local filesystem file in 64KB blocks.
+
+    Args:
+        path (Path): Path to the target file.
+
+    Returns:
+        str: Hexadecimal SHA-256 digest string, or empty string if file does not exist.
+    """
     if not path.exists():
         return ""
     h = hashlib.sha256()
@@ -29,7 +40,10 @@ def compute_sha256(path: Path) -> str:
 
 
 class LogDispatcher:
+    """Orchestrates well log slicing, atomic streaming into Redis, state recovery, and batch backpressure."""
+
     def __init__(self) -> None:
+        """Initializes the LogDispatcher service, binds Redis connections, and restores state."""
         self.data_dir = Path(os.getenv("DATA_DIR", "./dataset"))
         self.images_dir = self.data_dir / "images"
         self.annotations_dir = self.data_dir / "bbox_annotation"
@@ -59,6 +73,7 @@ class LogDispatcher:
         self.recover_and_auto_resume()
 
     def recover_and_auto_resume(self) -> None:
+        """Inspects Redis on startup, executes automatic queue reconciliation, and resumes runs in background."""
         tracked = self.client.get_all_tracked_logs()
         for log_id, meta in tracked.items():
             status = meta["status"]
@@ -68,6 +83,32 @@ class LogDispatcher:
             elif status in (LogStatus.PROCESSING, LogStatus.MERGING):
                 if log_id not in self.active_log_ids:
                     self.active_log_ids.append(log_id)
+
+        # ---------------------------------------------------------------------
+        # AUTOMATIC BOOT-TIME STREAM & QUEUE RECONCILIATION
+        # ---------------------------------------------------------------------
+        if self.active_log_ids:
+            print(
+                f"[RECOVERY] Auditing {len(self.active_log_ids)} in-flight logs for missing tasks or barriers..."
+            )
+            for active_id in list(self.active_log_ids):
+                matches = list(self.annotations_dir.glob(f"{active_id}.json"))
+                if matches:
+                    try:
+                        audit_res = self.dispatch_single_log(matches[0], enqueue=False)
+                        action = audit_res.get("action")
+                        if action == "TRIGGERED_MERGE":
+                            print(
+                                f"[RECOVERY] Self-healed stuck barrier for {active_id} -> MERGING"
+                            )
+                        elif action == "RECONCILED":
+                            print(
+                                f"[RECOVERY] Re-enqueued missing stream slices for {active_id}: {audit_res.get('re_enqueued')}"
+                            )
+                    except Exception as err:
+                        print(
+                            f"[RECOVERY ERROR] Failed auditing active log {active_id}: {err}"
+                        )
 
         pipe_state = self.client.get_pipeline_state()
         saved_mode = pipe_state["mode"]
@@ -110,6 +151,11 @@ class LogDispatcher:
                 )
 
     def _sync_pipeline_state(self, target_file: Optional[str] = None) -> None:
+        """Persists the current dispatcher tracking state to the Redis pipeline state key.
+
+        Args:
+            target_file (Optional[str], optional): Target file identifier if executing in LIVE single-log mode. Defaults to None.
+        """
         self.client.save_pipeline_state(
             mode=self.mode.value,
             is_running=self.is_running,
@@ -120,12 +166,37 @@ class LogDispatcher:
         )
 
     def _generate_slices(self, start_y: int, end_y: int) -> List[Tuple[int, int]]:
+        """Partitions a vertical pixel coordinate interval into fixed slice-height chunks.
+
+        Args:
+            start_y (int): Top global pixel boundary of the column.
+            end_y (int): Bottom global pixel boundary of the column.
+
+        Returns:
+            List[Tuple[int, int]]: Ordered list of (y_start, y_end) coordinate pairs.
+        """
         slices = []
         for y in range(start_y, end_y, self.slice_height):
             slices.append((y, min(y + self.slice_height, end_y)))
         return slices
 
-    def dispatch_single_log(self, json_path: Path) -> Dict[str, Any]:
+    def dispatch_single_log(
+        self,
+        json_path: Path,
+        enqueue: bool = True,
+    ) -> Dict[str, Any]:
+        """Validates file integrity, reconciles missing chunks, or executes atomic multi-slice task dispatching.
+
+        Args:
+            json_path (Path): Path to the annotation JSON file on disk.
+            enqueue (bool, optional): If False, only audits existing Redis state and does not enqueue fresh logs. Defaults to True.
+
+        Raises:
+            ValueError: If bounding box columns are missing or if recorded file hashes indicate file tampering/corruption.
+
+        Returns:
+            Dict[str, Any]: Summary dictionary containing log_id, slice counts, status, and reconciliation action taken.
+        """
         with open(json_path, "r") as f:
             data = json.load(f)
 
@@ -135,6 +206,17 @@ class LogDispatcher:
 
         img_hash = compute_sha256(image_path)
         json_hash = compute_sha256(json_path)
+
+        bboxes = data.get("bounding_boxes", {})
+        depth_bbox = bboxes.get("depth_column")
+        lith_bbox = bboxes.get("interpreted_lithology_column")
+        legend_bbox = bboxes.get("lithology_legend")
+
+        if not depth_bbox or not lith_bbox:
+            raise ValueError(f"Missing required columns in {json_path.name}")
+
+        depth_slices = self._generate_slices(depth_bbox[1], depth_bbox[3])
+        lith_slices = self._generate_slices(lith_bbox[1], lith_bbox[3])
 
         existing_meta = self.client.get_document_meta(log_id)
         if existing_meta:
@@ -149,67 +231,158 @@ class LogDispatcher:
                 raise ValueError(f"Data integrity failed for {log_id}: {reason}")
 
             status = existing_meta["status"]
-            if status in (LogStatus.PROCESSING, LogStatus.MERGING, LogStatus.COMPLETED):
-                print(
-                    f"Log {log_id} verified healthy in Redis state '{status.value}'. Skipping slice enqueue."
-                )
+
+            if status == LogStatus.COMPLETED:
                 return {
                     "log_id": log_id,
                     "image_name": existing_meta["image_name"],
                     "depth_chunks": existing_meta["total_depth_chunks"],
                     "lith_chunks": existing_meta["total_lith_chunks"],
-                    "already_queued": True,
+                    "status": status.value,
+                    "action": "SKIPPED_COMPLETED",
                 }
 
-        bboxes = data.get("bounding_boxes", {})
-        depth_bbox = bboxes.get("depth_column")
-        lith_bbox = bboxes.get("interpreted_lithology_column")
-        legend_bbox = bboxes.get("lithology_legend")
+            if status == LogStatus.MERGING:
+                return {
+                    "log_id": log_id,
+                    "image_name": existing_meta["image_name"],
+                    "depth_chunks": existing_meta["total_depth_chunks"],
+                    "lith_chunks": existing_meta["total_lith_chunks"],
+                    "status": status.value,
+                    "action": "SKIPPED_MERGING",
+                }
 
-        if not depth_bbox or not lith_bbox:
-            raise ValueError(f"Missing required columns in {json_path.name}")
+            if status == LogStatus.PROCESSING:
+                missing = self.client.get_missing_slices(
+                    log_id, depth_slices, lith_slices
+                )
+                missing_d = missing["missing_depth"]
+                missing_l = missing["missing_lith"]
 
-        depth_slices = self._generate_slices(depth_bbox[1], depth_bbox[3])
-        lith_slices = self._generate_slices(lith_bbox[1], lith_bbox[3])
+                # Self-healing barrier check
+                if not missing_d and not missing_l:
+                    print(
+                        f"Log {log_id} all slices are completed! Self-healing merge barrier trigger..."
+                    )
+                    self.client._check_and_trigger_merge(log_id, image_path, lith_bbox)
+                    return {
+                        "log_id": log_id,
+                        "image_name": existing_meta["image_name"],
+                        "status": LogStatus.MERGING.value,
+                        "action": "TRIGGERED_MERGE",
+                    }
 
-        self.client.set_document_meta(
+                # Queue backlog & stall detection
+                depth_info = self.client.get_stream_group_backlog(
+                    self.client.STREAM_DEPTH, self.client.GROUP_DEPTH
+                )
+                lith_info = self.client.get_stream_group_backlog(
+                    self.client.STREAM_LITH, self.client.GROUP_LITH
+                )
+
+                depth_stalled = (
+                    depth_info["lag"] == 0 and depth_info["pending"] == 0 and missing_d
+                )
+                lith_stalled = (
+                    lith_info["lag"] == 0 and lith_info["pending"] == 0 and missing_l
+                )
+
+                if depth_stalled or lith_stalled:
+                    print(
+                        f"[RECONCILE] Log {log_id} detected missing tasks in drained stream! "
+                        f"Re-enqueuing {len(missing_d)} depth and {len(missing_l)} lith slices."
+                    )
+                    res = self.client.re_enqueue_missing_slices(
+                        log_id=log_id,
+                        image_path=image_path,
+                        depth_bbox=depth_bbox,
+                        lith_bbox=lith_bbox,
+                        legend_bbox=legend_bbox,
+                        missing_depth=missing_d if depth_stalled else [],
+                        missing_lith=missing_l if lith_stalled else [],
+                    )
+                    return {
+                        "log_id": log_id,
+                        "image_name": existing_meta["image_name"],
+                        "depth_chunks": len(depth_slices),
+                        "lith_chunks": len(lith_slices),
+                        "status": status.value,
+                        "action": "RECONCILED",
+                        "re_enqueued": res,
+                    }
+
+                return {
+                    "log_id": log_id,
+                    "image_name": existing_meta["image_name"],
+                    "depth_chunks": existing_meta["total_depth_chunks"],
+                    "lith_chunks": existing_meta["total_lith_chunks"],
+                    "status": status.value,
+                    "action": "IN_FLIGHT",
+                }
+
+        # If not already in Redis and enqueue is False (e.g. during reconcile), skip pushing tasks
+        if not enqueue:
+            return {
+                "log_id": log_id,
+                "image_name": image_name,
+                "depth_chunks": len(depth_slices),
+                "lith_chunks": len(lith_slices),
+                "status": LogStatus.PENDING.value,
+                "action": "UNQUEUED",
+            }
+
+        # Fresh Log: Atomic Pipelined Dispatch
+        self.client.dispatch_log_atomic(
             log_id=log_id,
-            total_depth=len(depth_slices),
-            total_lith=len(lith_slices),
             image_name=image_name,
+            image_path=image_path,
             image_sha256=img_hash,
             json_sha256=json_hash,
-            status=LogStatus.PROCESSING,
+            depth_bbox=depth_bbox,
+            lith_bbox=lith_bbox,
+            legend_bbox=legend_bbox,
+            depth_slices=depth_slices,
+            lith_slices=lith_slices,
         )
-
-        for y_start, y_end in depth_slices:
-            self.client.push_depth_task(
-                log_id=log_id,
-                image_path=image_path,
-                bbox=depth_bbox,
-                y_start=y_start,
-                y_end=y_end,
-            )
-
-        for y_start, y_end in lith_slices:
-            self.client.push_lith_task(
-                log_id=log_id,
-                image_path=image_path,
-                column_bbox=lith_bbox,
-                legend_bbox=legend_bbox,
-                y_start=y_start,
-                y_end=y_end,
-            )
 
         return {
             "log_id": log_id,
             "image_name": image_name,
             "depth_chunks": len(depth_slices),
             "lith_chunks": len(lith_slices),
-            "already_queued": False,
+            "status": LogStatus.PROCESSING.value,
+            "action": "DISPATCHED_ATOMIC",
+        }
+
+    def reconcile_all_logs(self) -> Dict[str, Any]:
+        """Audits all dataset logs and repairs stalled barriers or dropped slices across the entire pipeline.
+
+        Returns:
+            Dict[str, Any]: Audit summary with audited file count and per-document reconciliation records.
+        """
+        json_files = sorted(list(self.annotations_dir.glob("*.json")))
+        results = []
+
+        for p in json_files:
+            try:
+                # enqueue=False guarantees reconcile never force-dispatches unqueued files
+                info = self.dispatch_single_log(p, enqueue=False)
+                results.append(info)
+            except Exception as e:
+                results.append({"log_id": p.stem, "error": str(e)})
+
+        return {
+            "audited_count": len(json_files),
+            "details": results,
         }
 
     def wait_for_completion(self, log_ids: List[str], since_id: str) -> None:
+        """Blocks kernel execution until all specified log IDs broadcast a terminal status on stream:events.
+
+        Args:
+            log_ids (List[str]): List of document identifiers to await.
+            since_id (str): Stream message ID bookmark representing the start of execution.
+        """
         pending = set(log_ids)
 
         statuses = self.client.get_multiple_document_status(list(pending))
@@ -226,7 +399,9 @@ class LogDispatcher:
         if not pending:
             return
 
-        for event_id, payload in self.client.listen_events(since_id=since_id):
+        for event_id, payload in self.client.listen_events(
+            since_id=since_id, block_ms=500
+        ):
             if not self.is_running or not pending:
                 break
 
@@ -247,7 +422,15 @@ class LogDispatcher:
                 pending.discard(log_id)
                 self.active_log_ids = list(pending)
 
+                if not pending:
+                    break
+
     def run_live_stream(self, target_file: Optional[str] = None) -> None:
+        """Executes the single-log live demo flow, enqueuing slices and monitoring completion events.
+
+        Args:
+            target_file (Optional[str], optional): Target filename or stem. Defaults to DEMO_FILE environment variable.
+        """
         self.is_running = True
         self.mode = DispatcherMode.LIVE
         self.total_batches = 1
@@ -269,7 +452,7 @@ class LogDispatcher:
             print(
                 f"[LIVE MODE] Streaming tasks for single well log: {target_path.name}"
             )
-            res = self.dispatch_single_log(target_path)
+            res = self.dispatch_single_log(target_path, enqueue=True)
             self.active_log_ids = [res["log_id"]]
             self.wait_for_completion([res["log_id"]], since_id=stream_bookmark)
             print(f"[LIVE MODE] Well log {res['log_id']} processing completed.")
@@ -286,6 +469,12 @@ class LogDispatcher:
         batch_size: Optional[int] = None,
         resume_from_batch: Optional[int] = None,
     ) -> None:
+        """Executes full-dataset ingestion in sequential batches with backpressure barriers.
+
+        Args:
+            batch_size (Optional[int], optional): Number of documents per batch. Set to 0 to dispatch all at once.
+            resume_from_batch (Optional[int], optional): Batch index to resume execution from after recovery. Defaults to None.
+        """
         self.is_running = True
         self.mode = DispatcherMode.BATCH
         eff_batch_size = self.default_batch_size if batch_size is None else batch_size
@@ -307,7 +496,7 @@ class LogDispatcher:
                 all_ids = []
                 for p in json_files:
                     try:
-                        info = self.dispatch_single_log(p)
+                        info = self.dispatch_single_log(p, enqueue=True)
                         all_ids.append(info["log_id"])
                     except Exception as err:
                         print(f"[BATCH ERROR] Failed dispatching {p.name}: {err}")
@@ -364,7 +553,7 @@ class LogDispatcher:
                 dispatched_ids = []
                 for p in batch:
                     try:
-                        info = self.dispatch_single_log(p)
+                        info = self.dispatch_single_log(p, enqueue=True)
                         dispatched_ids.append(info["log_id"])
                     except Exception as err:
                         print(f"[BATCH ERROR] Skipping faulty log {p.name}: {err}")
@@ -382,19 +571,30 @@ class LogDispatcher:
 
 
 # -------------------------------------------------------------------------
-# FASTAPI CONTROL PLANE & ENDPOINTS
+# LIFESPAN & FASTAPI CONTROL PLANE GATEWAY
 # -------------------------------------------------------------------------
-
-app = FastAPI(
-    title="Well Log Dispatcher & Pipeline Gateway",
-    description="Control plane for streaming tasks to Redis and querying real-time document states.",
-    version="2.3.0",
-)
 
 dispatcher = LogDispatcher()
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handles graceful startup and immediate termination on SIGTERM without 10s container lag."""
+    yield
+    dispatcher.is_running = False
+
+
+app = FastAPI(
+    title="Well Log Dispatcher & Pipeline Gateway",
+    description="Control plane for streaming tasks to Redis and querying real-time document states.",
+    version="2.6.0",
+    lifespan=lifespan,
+)
+
+
 class LiveRequest(BaseModel):
+    """Request payload for triggering a single-log live demo execution."""
+
     file: Optional[str] = Field(
         default=None,
         description="Optional file name or log ID. Defaults to DEMO_FILE environment variable.",
@@ -402,6 +602,8 @@ class LiveRequest(BaseModel):
 
 
 class BatchRequest(BaseModel):
+    """Request payload for triggering full-dataset batch processing."""
+
     batch_size: Optional[int] = Field(
         default=None,
         description="Number of logs to process per batch. Set to 0 to dispatch all at once. Defaults to BATCH_SIZE env.",
@@ -409,6 +611,8 @@ class BatchRequest(BaseModel):
 
 
 class ResetRequest(BaseModel):
+    """Request payload for flushing Redis database and reinitializing orchestrator state."""
+
     force: bool = Field(
         default=True,
         description="Forcefully abort running pipeline and reset Redis.",
@@ -417,6 +621,7 @@ class ResetRequest(BaseModel):
 
 @app.get("/health")
 def health_check() -> Dict[str, str]:
+    """Evaluates Redis connectivity and overall service health status."""
     try:
         redis_ok = dispatcher.client.r.ping()
         return {
@@ -428,7 +633,9 @@ def health_check() -> Dict[str, str]:
 
 
 @app.get("/status")
+@app.get("/api/status")
 def get_status() -> Dict[str, Any]:
+    """Retrieves operational execution state, active mode, and completed document lists."""
     return {
         "is_running": dispatcher.is_running,
         "mode": dispatcher.mode.value,
@@ -441,18 +648,34 @@ def get_status() -> Dict[str, Any]:
 
 
 @app.post("/live/start")
-def start_live_processing(
-    req: LiveRequest = LiveRequest(),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-) -> Dict[str, Any]:
+def start_live_processing(req: LiveRequest = LiveRequest()) -> Dict[str, Any]:
+    """Triggers single-log live processing as an unmanaged daemon thread.
+
+    Args:
+        req (LiveRequest, optional): Payload containing target file. Defaults to LiveRequest().
+
+    Raises:
+        HTTPException: If the pipeline is already actively executing in LIVE or BATCH mode.
+
+    Returns:
+        Dict[str, Any]: Confirmation containing dispatch mode and target file.
+    """
     if dispatcher.is_running or dispatcher.mode != DispatcherMode.IDLE:
         raise HTTPException(
             status_code=409,
-            detail=f"Pipeline is already busy in mode '{dispatcher.mode.value}'. Check /status.",
+            detail=(
+                f"Pipeline is already busy in mode '{dispatcher.mode.value}' on batch "
+                f"{dispatcher.current_batch_index}/{dispatcher.total_batches}. Active logs: {dispatcher.active_log_ids}."
+            ),
         )
 
     target = req.file or dispatcher.demo_file
-    background_tasks.add_task(dispatcher.run_live_stream, target_file=target)
+    thread = threading.Thread(
+        target=dispatcher.run_live_stream,
+        kwargs={"target_file": target},
+        daemon=True,
+    )
+    thread.start()
 
     return {
         "status": "started",
@@ -463,20 +686,25 @@ def start_live_processing(
 
 
 @app.post("/batch/start")
-def start_batch_processing(
-    req: BatchRequest = BatchRequest(),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-) -> Dict[str, Any]:
+def start_batch_processing(req: BatchRequest = BatchRequest()) -> Dict[str, Any]:
     if dispatcher.is_running or dispatcher.mode != DispatcherMode.IDLE:
         raise HTTPException(
             status_code=409,
-            detail=f"Pipeline is already busy in mode '{dispatcher.mode.value}'. Check /status.",
+            detail=(
+                f"Pipeline is already running in mode '{dispatcher.mode.value}' on batch "
+                f"{dispatcher.current_batch_index}/{dispatcher.total_batches}. Active logs: {dispatcher.active_log_ids}."
+            ),
         )
 
     eff_batch = (
         dispatcher.default_batch_size if req.batch_size is None else req.batch_size
     )
-    background_tasks.add_task(dispatcher.run_batch_pipeline, batch_size=eff_batch)
+    thread = threading.Thread(
+        target=dispatcher.run_batch_pipeline,
+        kwargs={"batch_size": eff_batch},
+        daemon=True,
+    )
+    thread.start()
 
     return {
         "status": "started",
@@ -486,8 +714,15 @@ def start_batch_processing(
     }
 
 
+@app.api_route("/batch/reconcile", methods=["GET", "POST"])
+def reconcile_pipeline() -> Dict[str, Any]:
+    """Audits existing tracked tasks in Redis, re-enqueues dropped slices, and clears stuck barriers."""
+    return dispatcher.reconcile_all_logs()
+
+
 @app.post("/reset")
 def reset_pipeline(req: ResetRequest = ResetRequest()) -> Dict[str, str]:
+    """Flushes Redis database, re-creates consumer groups, and resets orchestrator memory state."""
     if dispatcher.is_running and not req.force:
         raise HTTPException(
             status_code=409,
@@ -511,11 +746,26 @@ def reset_pipeline(req: ResetRequest = ResetRequest()) -> Dict[str, str]:
 
 @app.get("/api/dashboard")
 def get_dashboard() -> Dict[str, Any]:
+    """Fetches real-time dashboard data including stream queue depths, persisted states, and per-document progress.
+
+    Returns:
+        Dict[str, Any]: Consolidated dictionary of pipeline state, active backlog across consumer groups, and tracked documents.
+    """
     r = dispatcher.client.r
     meta_keys = r.keys("log:*:meta")
     documents = []
 
     pipe_state = dispatcher.client.get_pipeline_state()
+
+    depth_backlog = dispatcher.client.get_stream_group_backlog(
+        dispatcher.client.STREAM_DEPTH, dispatcher.client.GROUP_DEPTH
+    )
+    lith_backlog = dispatcher.client.get_stream_group_backlog(
+        dispatcher.client.STREAM_LITH, dispatcher.client.GROUP_LITH
+    )
+    merge_backlog = dispatcher.client.get_stream_group_backlog(
+        dispatcher.client.STREAM_MERGE, dispatcher.client.GROUP_MERGE
+    )
 
     for key in sorted(meta_keys):
         meta = r.hgetall(key)
@@ -550,9 +800,14 @@ def get_dashboard() -> Dict[str, Any]:
             "persisted_state": pipe_state,
         },
         "queues": {
-            "pending_depth_tasks": r.xlen(dispatcher.client.STREAM_DEPTH),
-            "pending_lith_tasks": r.xlen(dispatcher.client.STREAM_LITH),
-            "pending_merge_tasks": r.xlen(dispatcher.client.STREAM_MERGE),
+            "pending_depth_tasks": depth_backlog["lag"] + depth_backlog["pending"],
+            "pending_lith_tasks": lith_backlog["lag"] + lith_backlog["pending"],
+            "pending_merge_tasks": merge_backlog["lag"] + merge_backlog["pending"],
+        },
+        "queue_breakdown": {
+            "depth": depth_backlog,
+            "lithology": lith_backlog,
+            "merge": merge_backlog,
         },
         "documents": documents,
     }

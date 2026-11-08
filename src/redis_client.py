@@ -3,7 +3,7 @@ import json
 import redis
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List, Generator
+from typing import Optional, Tuple, Dict, Any, List, Set, Generator
 
 
 class LogStatus(str, Enum):
@@ -84,7 +84,16 @@ class PipelineRedisClient:
         batch_size: int,
         target_file: Optional[str] = None,
     ) -> None:
-        """Stores global orchestrator execution parameters into Redis."""
+        """Stores global orchestrator execution parameters into Redis.
+
+        Args:
+            mode (str): Active operational mode string ('IDLE', 'LIVE', 'BATCH').
+            is_running (bool): Execution flag indicating an active background orchestrator loop.
+            current_batch (int): Current 1-based index of batch execution.
+            total_batches (int): Total batch count scheduled for the current pipeline run.
+            batch_size (int): Number of well logs partitioned into each sequential batch.
+            target_file (Optional[str], optional): Target file identifier if executing in LIVE single-log mode. Defaults to None.
+        """
         self.r.hset(
             self.KEY_PIPELINE_STATE,
             mapping={
@@ -98,7 +107,11 @@ class PipelineRedisClient:
         )
 
     def get_pipeline_state(self) -> Dict[str, Any]:
-        """Recovers global orchestrator execution state from Redis."""
+        """Recovers global orchestrator execution state from Redis.
+
+        Returns:
+            Dict[str, Any]: Parsed execution parameters including mode, is_running, current_batch, total_batches, batch_size, and target_file.
+        """
         state = self.r.hgetall(self.KEY_PIPELINE_STATE)
         if not state:
             return {
@@ -123,7 +136,211 @@ class PipelineRedisClient:
         self.save_pipeline_state("IDLE", False, 0, 0, 5, None)
 
     # -------------------------------------------------------------------------
-    # TASK PRODUCERS (Dispatcher & Barrier Engine)
+    # ATOMIC PIPELINED DISPATCH & STREAM RECONCILIATION
+    # -------------------------------------------------------------------------
+
+    def dispatch_log_atomic(
+        self,
+        log_id: str,
+        image_name: str,
+        image_path: str | Path,
+        image_sha256: str,
+        json_sha256: str,
+        depth_bbox: List[int],
+        lith_bbox: List[int],
+        legend_bbox: Optional[List[int]],
+        depth_slices: List[Tuple[int, int]],
+        lith_slices: List[Tuple[int, int]],
+    ) -> None:
+        """Atomically stores metadata, slice sets, and enqueues all depth and lith tasks in one transaction.
+
+        Args:
+            log_id (str): Unique identifier for the well log document.
+            image_name (str): Original filename of the TIFF image.
+            image_path (str | Path): Absolute or relative filesystem path to the TIFF image.
+            image_sha256 (str): SHA-256 cryptographic digest of the TIFF image file.
+            json_sha256 (str): SHA-256 cryptographic digest of the annotation JSON file.
+            depth_bbox (List[int]): Depth column bounding box in [x0, y0, x1, y1] format.
+            lith_bbox (List[int]): Lithology column bounding box in [x0, y0, x1, y1] format.
+            legend_bbox (Optional[List[int]]): Legend column bounding box in [x0, y0, x1, y1] format, if available.
+            depth_slices (List[Tuple[int, int]]): List of (y_start, y_end) coordinate pairs for depth OCR slices.
+            lith_slices (List[Tuple[int, int]]): List of (y_start, y_end) coordinate pairs for lithology slices.
+        """
+        pipe = self.r.pipeline(transaction=True)
+
+        meta_key = f"log:{log_id}:meta"
+        pipe.hset(
+            meta_key,
+            mapping={
+                "image_name": image_name,
+                "image_sha256": image_sha256,
+                "json_sha256": json_sha256,
+                "total_depth_chunks": len(depth_slices),
+                "completed_depth_chunks": 0,
+                "total_lith_chunks": len(lith_slices),
+                "completed_lith_chunks": 0,
+                "status": LogStatus.PROCESSING.value,
+            },
+        )
+
+        all_depth_keys = [f"{y0}:{y1}" for y0, y1 in depth_slices]
+        all_lith_keys = [f"{y0}:{y1}" for y0, y1 in lith_slices]
+
+        if all_depth_keys:
+            pipe.sadd(f"log:{log_id}:slices:depth:all", *all_depth_keys)
+        if all_lith_keys:
+            pipe.sadd(f"log:{log_id}:slices:lith:all", *all_lith_keys)
+
+        for y_start, y_end in depth_slices:
+            payload = {
+                "log_id": log_id,
+                "image_path": str(image_path),
+                "bbox": depth_bbox,
+                "y_start": y_start,
+                "y_end": y_end,
+            }
+            pipe.xadd(self.STREAM_DEPTH, {"data": json.dumps(payload)})
+
+        for y_start, y_end in lith_slices:
+            payload = {
+                "log_id": log_id,
+                "image_path": str(image_path),
+                "column_bbox": lith_bbox,
+                "legend_bbox": legend_bbox,
+                "y_start": y_start,
+                "y_end": y_end,
+            }
+            pipe.xadd(self.STREAM_LITH, {"data": json.dumps(payload)})
+
+        event_payload = {
+            "log_id": log_id,
+            "status": LogStatus.PROCESSING.value,
+            "depth_chunks": len(depth_slices),
+            "lith_chunks": len(lith_slices),
+        }
+        pipe.xadd(self.STREAM_EVENTS, {"data": json.dumps(event_payload)})
+
+        pipe.execute()
+
+    def get_stream_group_backlog(self, stream: str, group: str) -> Dict[str, int]:
+        """Inspects stream consumer group lag and Pending Entries List (PEL) count.
+
+        Args:
+            stream (str): Stream key to inspect.
+            group (str): Consumer group name assigned to the stream.
+
+        Returns:
+            Dict[str, int]: Dictionary containing integer counts for 'lag' and 'pending'.
+        """
+        try:
+            groups = self.r.xinfo_groups(stream)
+            for g in groups:
+                if g.get("name") == group:
+                    lag = g.get("lag")
+                    if lag is None:
+                        lag = 0
+                    return {
+                        "lag": int(lag),
+                        "pending": int(g.get("pending", 0)),
+                    }
+        except redis.exceptions.ResponseError:
+            pass
+        return {"lag": 0, "pending": 0}
+
+    def get_missing_slices(
+        self,
+        log_id: str,
+        expected_depth_slices: List[Tuple[int, int]],
+        expected_lith_slices: List[Tuple[int, int]],
+    ) -> Dict[str, List[Tuple[int, int]]]:
+        """Compares expected slices against completed slice sets to identify unfulfilled chunks.
+
+        Args:
+            log_id (str): Target well log identifier.
+            expected_depth_slices (List[Tuple[int, int]]): Full list of expected (y_start, y_end) depth slices.
+            expected_lith_slices (List[Tuple[int, int]]): Full list of expected (y_start, y_end) lithology slices.
+
+        Returns:
+            Dict[str, List[Tuple[int, int]]]: Dictionary containing lists of missing (y_start, y_end) slices under 'missing_depth' and 'missing_lith'.
+        """
+        completed_depth: Set[str] = (
+            self.r.smembers(f"log:{log_id}:slices:depth:completed") or set()
+        )
+        completed_lith: Set[str] = (
+            self.r.smembers(f"log:{log_id}:slices:lith:completed") or set()
+        )
+
+        missing_depth = [
+            (y0, y1)
+            for y0, y1 in expected_depth_slices
+            if f"{y0}:{y1}" not in completed_depth
+        ]
+        missing_lith = [
+            (y0, y1)
+            for y0, y1 in expected_lith_slices
+            if f"{y0}:{y1}" not in completed_lith
+        ]
+
+        return {
+            "missing_depth": missing_depth,
+            "missing_lith": missing_lith,
+        }
+
+    def re_enqueue_missing_slices(
+        self,
+        log_id: str,
+        image_path: str | Path,
+        depth_bbox: List[int],
+        lith_bbox: List[int],
+        legend_bbox: Optional[List[int]],
+        missing_depth: List[Tuple[int, int]],
+        missing_lith: List[Tuple[int, int]],
+    ) -> Dict[str, int]:
+        """Atomically re-enqueues only unfulfilled slices into the respective streams.
+
+        Args:
+            log_id (str): Target well log identifier.
+            image_path (str | Path): Absolute or relative filesystem path to the TIFF image.
+            depth_bbox (List[int]): Depth column bounding box in [x0, y0, x1, y1] format.
+            lith_bbox (List[int]): Lithology column bounding box in [x0, y0, x1, y1] format.
+            legend_bbox (Optional[List[int]]): Legend column bounding box in [x0, y0, x1, y1] format, if available.
+            missing_depth (List[Tuple[int, int]]): Coordinates of missing depth slices to re-enqueue.
+            missing_lith (List[Tuple[int, int]]): Coordinates of missing lithology slices to re-enqueue.
+
+        Returns:
+            Dict[str, int]: Counts of tasks re-enqueued under 're_enqueued_depth' and 're_enqueued_lith'.
+        """
+        pipe = self.r.pipeline(transaction=True)
+
+        for y_start, y_end in missing_depth:
+            payload = {
+                "log_id": log_id,
+                "image_path": str(image_path),
+                "bbox": depth_bbox,
+                "y_start": y_start,
+                "y_end": y_end,
+            }
+            pipe.xadd(self.STREAM_DEPTH, {"data": json.dumps(payload)})
+
+        for y_start, y_end in missing_lith:
+            payload = {
+                "log_id": log_id,
+                "image_path": str(image_path),
+                "column_bbox": lith_bbox,
+                "legend_bbox": legend_bbox,
+                "y_start": y_start,
+                "y_end": y_end,
+            }
+            pipe.xadd(self.STREAM_LITH, {"data": json.dumps(payload)})
+
+        pipe.execute()
+        return {
+            "re_enqueued_depth": len(missing_depth),
+            "re_enqueued_lith": len(missing_lith),
+        }
+
+    # -------------------------------------------------------------------------
+    # TASK PRODUCERS (Single-Task Utilities)
     # -------------------------------------------------------------------------
 
     def push_depth_task(
@@ -477,6 +694,8 @@ class PipelineRedisClient:
             total_depth (int): Total depth OCR slices scheduled for this file.
             total_lith (int): Total lithology segmentation slices scheduled for this file.
             image_name (str): Original filename of the TIFF image.
+            image_sha256 (str): SHA-256 cryptographic digest of the TIFF image file.
+            json_sha256 (str): SHA-256 cryptographic digest of the annotation JSON file.
             status (LogStatus, optional): Initial status of the log. Defaults to LogStatus.PROCESSING.
         """
         self.r.hset(
@@ -523,7 +742,16 @@ class PipelineRedisClient:
         current_image_sha: str,
         current_json_sha: str,
     ) -> Tuple[bool, str]:
-        """Validates that recorded file fingerprints and counter bounds match Redis metadata."""
+        """Validates that recorded file fingerprints and counter bounds match Redis metadata.
+
+        Args:
+            log_id (str): Target well log identifier.
+            current_image_sha (str): Computed SHA-256 hash of the TIFF image on disk.
+            current_json_sha (str): Computed SHA-256 hash of the annotation JSON on disk.
+
+        Returns:
+            Tuple[bool, str]: (True, "OK") if intact, or (False, reason) if corruption or divergence is found.
+        """
         meta = self.get_document_meta(log_id)
         if not meta:
             return False, "No metadata record found in Redis"
@@ -618,7 +846,8 @@ class PipelineRedisClient:
 
         results = {}
         for key, meta in zip(meta_keys, all_meta):
-            log_id = key.split(":")[1]
+            parts = key.split(":")
+            log_id = ":".join(parts[1:-1])
             results[log_id] = {
                 "image_name": meta.get("image_name"),
                 "image_sha256": meta.get("image_sha256"),
@@ -641,20 +870,30 @@ class PipelineRedisClient:
         msg_id: str,
         image_path: str | Path,
         column_bbox: List[int],
+        slice_bounds: Optional[Tuple[int, int]] = None,
     ) -> bool:
-        """Acknowledges a depth task, increments progress, and triggers merger if all tasks finished.
+        """Acknowledges a depth task, records slice completion idempotently, and triggers merge if all chunks finished.
 
         Args:
             log_id (str): Target well log identifier.
             msg_id (str): Redis message identifier to acknowledge.
             image_path (str | Path): Path to the source TIFF image.
             column_bbox (List[int]): Lithology bounding box required for final merging visualization.
+            slice_bounds (Optional[Tuple[int, int]], optional): Coordinate bounds (y_start, y_end) of the slice. Defaults to None.
 
         Returns:
             bool: True if this chunk completed the barrier and triggered the merge step, False otherwise.
         """
         self.ack_task(self.STREAM_DEPTH, self.GROUP_DEPTH, msg_id)
-        self.r.hincrby(f"log:{log_id}:meta", "completed_depth_chunks", 1)
+
+        if slice_bounds:
+            token = f"{slice_bounds[0]}:{slice_bounds[1]}"
+            self.r.sadd(f"log:{log_id}:slices:depth:completed", token)
+            completed = self.r.scard(f"log:{log_id}:slices:depth:completed")
+            self.r.hset(f"log:{log_id}:meta", "completed_depth_chunks", completed)
+        else:
+            self.r.hincrby(f"log:{log_id}:meta", "completed_depth_chunks", 1)
+
         return self._check_and_trigger_merge(log_id, image_path, column_bbox)
 
     def complete_lith_chunk(
@@ -663,20 +902,30 @@ class PipelineRedisClient:
         msg_id: str,
         image_path: str | Path,
         column_bbox: List[int],
+        slice_bounds: Optional[Tuple[int, int]] = None,
     ) -> bool:
-        """Acknowledges a lithology task, increments progress, and triggers merger if all tasks finished.
+        """Acknowledges a lithology task, records slice completion idempotently, and triggers merge if all chunks finished.
 
         Args:
             log_id (str): Target well log identifier.
             msg_id (str): Redis message identifier to acknowledge.
             image_path (str | Path): Path to the source TIFF image.
             column_bbox (List[int]): Lithology bounding box required for final merging visualization.
+            slice_bounds (Optional[Tuple[int, int]], optional): Coordinate bounds (y_start, y_end) of the slice. Defaults to None.
 
         Returns:
             bool: True if this chunk completed the barrier and triggered the merge step, False otherwise.
         """
         self.ack_task(self.STREAM_LITH, self.GROUP_LITH, msg_id)
-        self.r.hincrby(f"log:{log_id}:meta", "completed_lith_chunks", 1)
+
+        if slice_bounds:
+            token = f"{slice_bounds[0]}:{slice_bounds[1]}"
+            self.r.sadd(f"log:{log_id}:slices:lith:completed", token)
+            completed = self.r.scard(f"log:{log_id}:slices:lith:completed")
+            self.r.hset(f"log:{log_id}:meta", "completed_lith_chunks", completed)
+        else:
+            self.r.hincrby(f"log:{log_id}:meta", "completed_lith_chunks", 1)
+
         return self._check_and_trigger_merge(log_id, image_path, column_bbox)
 
     def _check_and_trigger_merge(
@@ -723,13 +972,13 @@ class PipelineRedisClient:
             log_id (str): Target well log identifier.
 
         Returns:
-            bool: True if document status is MERGING or COMPLETED, False otherwise.
+            bool: True if document status is COMPLETED, False otherwise.
         """
         status = self.get_document_status(log_id)
         return status == LogStatus.COMPLETED
 
     def flush_all(self) -> None:
-        """Flushes the active Redis database and recreates all required consumer groups."""
+        """Flushes the active Redis database, recreates required consumer groups, and resets orchestrator state."""
         self.r.flushdb()
         self.init_consumer_groups()
         self.clear_pipeline_state()

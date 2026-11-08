@@ -4,6 +4,7 @@
 dataset/
 redis_data/
 output/
+scripts/
 __pycache__/
 *.pyc
 *.pyo
