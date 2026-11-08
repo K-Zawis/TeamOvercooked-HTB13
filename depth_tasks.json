@@ -1,0 +1,50 @@
+[
+  {
+    "log_id": "0000000009_d-582_0000020435-0001_log06_fe_5in_md",
+    "image_path": "/home/wasoj/Projects/htb13/dataset/images/0000000009_d-582_0000020435-0001_log06_fe_5in_md.tif",
+    "bbox": [
+      1288,
+      4404,
+      1376,
+      11195
+    ],
+    "y_start": 4404,
+    "y_end": 6404
+  },
+  {
+    "log_id": "0000000009_d-582_0000020435-0001_log06_fe_5in_md",
+    "image_path": "/home/wasoj/Projects/htb13/dataset/images/0000000009_d-582_0000020435-0001_log06_fe_5in_md.tif",
+    "bbox": [
+      1288,
+      4404,
+      1376,
+      11195
+    ],
+    "y_start": 6404,
+    "y_end": 8404
+  },
+  {
+    "log_id": "0000000009_d-582_0000020435-0001_log06_fe_5in_md",
+    "image_path": "/home/wasoj/Projects/htb13/dataset/images/0000000009_d-582_0000020435-0001_log06_fe_5in_md.tif",
+    "bbox": [
+      1288,
+      4404,
+      1376,
+      11195
+    ],
+    "y_start": 8404,
+    "y_end": 10404
+  },
+  {
+    "log_id": "0000000009_d-582_0000020435-0001_log06_fe_5in_md",
+    "image_path": "/home/wasoj/Projects/htb13/dataset/images/0000000009_d-582_0000020435-0001_log06_fe_5in_md.tif",
+    "bbox": [
+      1288,
+      4404,
+      1376,
+      11195
+    ],
+    "y_start": 10404,
+    "y_end": 11195
+  }
+]
