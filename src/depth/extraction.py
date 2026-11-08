@@ -313,7 +313,9 @@ class DepthExtractor:
                 found.append(_Anchor(y, value, token.confidence))
         return found
 
-    def extract_observations(self, depth_crop: np.ndarray) -> dict[str, dict[int, float]]:
+    def extract_observations(
+        self, depth_crop: np.ndarray
+    ) -> dict[str, dict[int, float]]:
         """Extract one independent task without buffering labels or calibrating.
 
         Return every confident, unclipped, unambiguous numeric observation,
@@ -322,9 +324,11 @@ class DepthExtractor:
         """
         self._validate_image(depth_crop)
         candidates = self._merge(self._read_anchors(depth_crop), limit=None)
-        unambiguous = [a for a in candidates if not any(
-            abs(a.y - b.y) <= 3 and a.depth != b.depth for b in candidates
-        )]
+        unambiguous = [
+            a
+            for a in candidates
+            if not any(abs(a.y - b.y) <= 3 and a.depth != b.depth for b in candidates)
+        ]
         return {"y_to_depth_map": {a.y: a.depth for a in unambiguous}}
 
     def extract(self, depth_crop: np.ndarray) -> dict[str, dict[int, float]]:
@@ -333,8 +337,11 @@ class DepthExtractor:
         if self._width is not None and depth_crop.shape[1] != self._width:
             raise ValueError("strip width changed; call reset() before a new document")
         tail_height = 0 if self._tail is None else len(self._tail)
-        image = (depth_crop if self._tail is None
-                 else np.concatenate((self._tail, depth_crop)))
+        image = (
+            depth_crop
+            if self._tail is None
+            else np.concatenate((self._tail, depth_crop))
+        )
         found = self._read_anchors(image, self._offset - tail_height)
         width = image.shape[1]
         candidates = self._merge([*self._candidates, *found])

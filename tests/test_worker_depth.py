@@ -72,7 +72,7 @@ def test_invalid_tasks_rejected(image_path, changes):
 
 
 @pytest.mark.parametrize("layout", ["rgb", "tiled", "planar", "gray", "white", "palette", "bilevel", "rgba"])
-def test_tifffile_region_decoding(tmp_path, layout):
+def test_rasterio_region_decoding(tmp_path, layout):
     path = tmp_path / f"{layout}.tif"
     rng = np.random.default_rng(17)
     rgb = rng.integers(0, 256, size=(80, 64, 3), dtype=np.uint8)
@@ -126,11 +126,65 @@ def test_out_of_image_bbox_rejected_before_decoding(image_path):
         read_depth_strip(task)
 
 
+@pytest.mark.parametrize("layout", ["stripped", "tiled", "planar"])
+def test_only_bounded_windows_are_read(tmp_path, opened_depth_resources, layout):
+    path = tmp_path / f"blocks-{layout}.tif"
+    rgb = np.random.default_rng(17).integers(0, 256, (256, 128, 3), dtype=np.uint8)
+    options = dict(photometric="rgb", compression="lzw")
+    if layout == "tiled":
+        options["tile"] = (16, 16)
+    else:
+        options["rowsperstrip"] = 16
+    if layout == "planar":
+        options["planarconfig"] = "separate"
+    tifffile.imwrite(path, np.moveaxis(rgb, -1, 0) if layout == "planar" else rgb,
+                     **options)
+    task = DepthTask.from_fields(payload(path, start=100, end=124,
+                                         bbox=[40, 80, 60, 160]))
+    strips = iter_depth_strips(task, strip_height=8, context_rows=0)
+    try:
+        for start in (100, 108, 116):
+            strip = next(strips)
+            np.testing.assert_array_equal(strip.pixels, rgb[start:start+8, 40:60])
+            call = opened_depth_resources[0].read.call_args
+            window = call.kwargs["window"]
+            assert (window.col_off, window.row_off, window.width, window.height) == (40, start, 20, 8)
+            del strip
+        with pytest.raises(StopIteration):
+            next(strips)
+    finally:
+        strips.close()
+    assert len(opened_depth_resources) == 1
+    assert opened_depth_resources[0].read.call_count == 3
+
+
 def test_unsupported_high_bit_depth_rejected(tmp_path):
     path = tmp_path / "16bit.tif"
     tifffile.imwrite(path, np.zeros((500, 80), np.uint16))
     with pytest.raises(ValueError, match="sample type"):
         read_depth_strip(DepthTask.from_fields(payload(path)))
+
+
+def test_dark_eight_bit_grayscale_is_not_scaled_as_bilevel(tmp_path):
+    path = tmp_path / "dark.tif"
+    gray = np.indices((500, 80))[0].astype(np.uint8) % 2
+    tifffile.imwrite(path, gray, photometric="minisblack")
+    pixels = read_depth_strip(DepthTask.from_fields(payload(path)))
+    np.testing.assert_array_equal(pixels, np.repeat(gray[100:300, 5:75, None], 3, axis=2))
+
+
+@pytest.mark.parametrize("associated", [False, True])
+def test_transparent_rgba_composited_onto_white(tmp_path, associated):
+    path = tmp_path / "alpha.tif"
+    rgba = np.full((500, 80, 4), 128, np.uint8)
+    rgba[:, :, :3] = [50, 25, 0] if associated else [100, 50, 0]
+    tifffile.imwrite(path, rgba, photometric="rgb",
+                     extrasamples="assocalpha" if associated else "unassalpha")
+    rgb = rgba[:, :, :3].astype(np.float32)
+    alpha = rgba[:, :, 3:4].astype(np.float32) / 255
+    expected = ((rgb if associated else rgb * alpha) + 255 * (1-alpha)).astype(np.uint8)
+    pixels = read_depth_strip(DepthTask.from_fields(payload(path)))
+    np.testing.assert_array_equal(pixels, expected[100:300, 5:75])
 
 
 def test_stream_hash_coordinates_and_ack_order(image_path):
@@ -390,41 +444,56 @@ def large_depth_task(tmp_path):
 
 @pytest.fixture
 def opened_depth_resources(monkeypatch):
-    """Observe actual TIFF handles and stores without replacing their behavior."""
+    """Observe real Rasterio windows; prohibit reads without an explicit ROI."""
     from src.depth import worker as worker_depth
-    original_open, original_store = tifffile.TiffFile, tifffile.TiffPage.aszarr
-    handles, stores = [], []
+    original_open = worker_depth.rasterio.open
+    handles = []
+
+    class Reader:
+        def __init__(self, image):
+            self.image = image
+            self.close = Mock(wraps=image.close)
+            self.read = Mock(side_effect=self.read_window)
+
+        def read_window(self, *args, **kwargs):
+            assert kwargs.get("window") is not None, "full-image read"
+            return self.image.read(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.image, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
     def open_file(*args, **kwargs):
-        handle = original_open(*args, **kwargs)
+        handle = Reader(original_open(*args, **kwargs))
         handles.append(handle)
         return handle
-    def open_store(page, *args, **kwargs):
-        store = original_store(page, *args, **kwargs)
-        store.close = Mock(wraps=store.close)
-        stores.append(store)
-        return store
-    monkeypatch.setattr(worker_depth.tifffile, "TiffFile", open_file)
-    monkeypatch.setattr(tifffile.TiffPage, "aszarr", open_store)
-    return handles, stores
+
+    monkeypatch.setattr(worker_depth.rasterio, "open", open_file)
+    return handles
 
 
 def test_iterator_bounds_offsets_and_single_open(large_depth_task, opened_depth_resources):
     from src.depth import worker as worker_depth
     windows = []
     decode = worker_depth._read_rgb_window
-    def record(page, image, left, right, start, end):
+    def record(image, left, right, start, end):
         windows.append((start, end))
-        return decode(page, image, left, right, start, end)
+        return decode(image, left, right, start, end)
     with patch.object(worker_depth, "_read_rgb_window", side_effect=record):
         strips = list(iter_depth_strips(large_depth_task))
     assert [(s.y_start, s.y_end) for s in strips] == [(100, 2100), (2100, 4100), (4100, 5900)]
     assert windows == [(100, 2228), (1972, 4228), (3972, 5900)]
     assert [s.y_offset for s in strips] == [100, 1972, 3972]
     assert max(len(s.pixels) for s in strips) <= 2256
-    handles, stores = opened_depth_resources
-    assert len(handles) == len(stores) == 1
-    assert handles[0].filehandle.closed
-    stores[0].close.assert_called_once_with()
+    handles = opened_depth_resources
+    assert len(handles) == 1
+    assert handles[0].closed
+    handles[0].close.assert_called_once_with()
 
 
 def test_iterator_closes_resources_when_stopped_early(large_depth_task, opened_depth_resources):
@@ -432,9 +501,9 @@ def test_iterator_closes_resources_when_stopped_early(large_depth_task, opened_d
     first = next(strips)
     assert first.y_start == 100
     strips.close()
-    handles, stores = opened_depth_resources
-    assert handles[0].filehandle.closed
-    stores[0].close.assert_called_once_with()
+    handles = opened_depth_resources
+    assert handles[0].closed
+    handles[0].close.assert_called_once_with()
 
 
 def test_large_task_preserves_boundary_ownership_and_counts_once(large_depth_task):
@@ -507,9 +576,9 @@ def test_later_strip_failure_closes_resources_without_partial_commit(
     assert not hashes(client)
     assert mid in pending(client, worker)
     assert not client.r.exists(f"log:{task.log_id}:depth_completed_tasks")
-    handles, stores = opened_depth_resources
-    assert handles[0].filehandle.closed
-    stores[0].close.assert_called_once_with()
+    handles = opened_depth_resources
+    assert handles[0].closed
+    handles[0].close.assert_called_once_with()
     worker.extractor = FakeExtractor()
     assert worker.run_once(block_ms=1)
     assert client.r.hgetall(f"log:{task.log_id}:depths") == {
@@ -517,16 +586,16 @@ def test_later_strip_failure_closes_resources_without_partial_commit(
     }
     assert client.r.hget(f"log:{task.log_id}:meta", "completed_depth_chunks") == "1"
     assert not pending(client, worker)
-    assert len(handles) == len(stores) == 2
-    assert all(handle.filehandle.closed for handle in handles)
-    assert all(store.close.call_count == 1 for store in stores)
+    assert len(handles) == 2
+    assert all(handle.closed for handle in handles)
+    assert all(handle.close.call_count == 1 for handle in handles)
 
 
 @pytest.mark.parametrize("height", [0, -1, True, 1.5, "2000"])
 def test_invalid_strip_height_rejected_before_opening_or_redis(image_path, height):
     task = DepthTask.from_fields(payload(image_path))
     client = make_client()
-    with patch("src.depth.worker.tifffile.TiffFile", side_effect=AssertionError("opened TIFF")):
+    with patch("src.depth.worker.rasterio.open", side_effect=AssertionError("opened TIFF")):
         with pytest.raises(ValueError, match="strip_height"):
             list(iter_depth_strips(task, strip_height=height))
         with pytest.raises(ValueError, match="strip_height"):

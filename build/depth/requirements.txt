@@ -2,3 +2,10 @@ numpy
 redis
 tiffile
 zarr
+pillow
+imagecodecs
+donfig
+google-crc32c
+msgspec
+numcodecs
+typing-extensions

@@ -1,3 +1,4 @@
+import io
 import os
 import shutil
 import subprocess
@@ -11,9 +12,32 @@ from src.depth.extraction import (
     DepthExtractionError,
     OCRToken,
     TesseractOCR,
+    _grayscale,
     _number,
 )
 from src.depth import DepthExtractor
+
+
+def test_numpy_grayscale_preserves_rgb_luminance():
+    rgb = np.random.default_rng(17).integers(0, 256, (100, 80, 3), dtype=np.uint8)
+    np.testing.assert_array_equal(_grayscale(rgb), np.array(Image.fromarray(rgb).convert("L")))
+
+
+@pytest.mark.parametrize("scale", [1, 2, 3])
+def test_tesseract_receives_bounded_graymap_with_white_border(scale):
+    rgb = np.full((100, 80, 3), 255, dtype=np.uint8)
+    rgb[30:70, 20:60] = 0
+    result = subprocess.CompletedProcess([], 0, b"text\tconf\tleft\ttop\twidth\theight\n", b"")
+    with patch("src.depth.extraction.subprocess.run", return_value=result) as run:
+        assert TesseractOCR(scale=scale).recognize(rgb) == []
+    encoded = run.call_args.kwargs["input"]
+    assert encoded.startswith(b"P5\n")
+    with Image.open(io.BytesIO(encoded)) as image:
+        pixels = np.array(image)
+    assert pixels.shape == (100 * scale + 24, 80 * scale + 24)
+    assert np.all(pixels[:12] == 255) and np.all(pixels[-12:] == 255)
+    assert np.all(pixels[:, :12] == 255) and np.all(pixels[:, -12:] == 255)
+    assert pixels[len(pixels)//2, pixels.shape[1]//2] == 0
 
 
 def token(y, value, confidence=0.95, box=None):

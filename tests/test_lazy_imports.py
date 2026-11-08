@@ -16,7 +16,7 @@ def test_import_defers_heavy_dependencies(module):
 import importlib
 import sys
 importlib.import_module({module!r})
-heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'redis'}}
+heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'rasterio', 'redis'}}
 loaded = heavy.intersection(sys.modules)
 assert not loaded, f'Unexpected eager imports: {{loaded}}'
 """
@@ -36,7 +36,7 @@ except SystemExit as exc:
     assert exc.code == 0
 else:
     raise AssertionError('help did not exit')
-heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'redis'}}
+heavy = {{'numpy', 'PIL', 'tifffile', 'zarr', 'imagecodecs', 'rasterio', 'redis'}}
 loaded = heavy.intersection(sys.modules)
 assert not loaded, f'Unexpected eager imports: {{loaded}}'
 """
