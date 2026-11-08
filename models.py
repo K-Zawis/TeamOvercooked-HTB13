@@ -1,32 +1,10 @@
-import numpy as np
+lazy import numpy as np
 from typing import List, Dict, Any
+from depth_extraction import StreamingDepthExtractor
 
-class DepthExtractor:
-    def __init__(self):
-        """
-        Initialize OCR models here.
-        This runs exactly once per worker process, avoiding memory bloat.
-        """
-        pass
 
-    def extract(self, depth_crop: np.ndarray) -> Dict[str, Dict[int, float]]:
-        """Extracts depth values and their corresponding y-pixel cooridnates
-
-        Args:
-            depth_crop (np.ndarray): RGB image array of the cropped depth column.
-
-        Returns:
-            Dict[str, Dict[int, float]]: A dictionary contaning the y-to-dpeth mapping.
-        """
-        # ML TEAM: Replace this dummy data with real OCR extraction logic.
-        # Ensure you filter out noise (like horizontal grid lines or text).
-        return {
-            "y_to_depth_map": {
-                100: 17200.0,
-                500: 17300.0,
-                900: 17400.0
-            }
-        }
+class DepthExtractor(StreamingDepthExtractor):
+    """Depth-scale OCR for ordered RGB strips. Call reset() between documents."""
 
 
 class LithologyClusterer:
