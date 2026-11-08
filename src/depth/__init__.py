@@ -11,15 +11,17 @@ lazy from .extraction import (
     OCRToken,
     TesseractOCR,
 )
-lazy from .worker import DepthTask, DepthWorker, read_depth_strip
+lazy from .worker import DepthStrip, DepthTask, DepthWorker, iter_depth_strips, read_depth_strip
 
 __all__ = [
     "DepthExtractionError",
     "DepthExtractor",
+    "DepthStrip",
     "DepthTask",
     "DepthWorker",
     "OCRBackend",
     "OCRToken",
     "TesseractOCR",
+    "iter_depth_strips",
     "read_depth_strip",
 ]

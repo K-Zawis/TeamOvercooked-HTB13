@@ -167,6 +167,7 @@ continuously and consumes tasks dispatched to Redis. Configure it with:
 | `REDIS_PORT` | `6379` |
 | `REDIS_DB` | `0` |
 | `CONSUMER_NAME` | `DepthWorker` |
+| `SLICE_HEIGHT` | `2000` |
 
 Use a stable, distinct `CONSUMER_NAME` for each worker instance. For a local run:
 
@@ -210,12 +211,26 @@ still controls minimum decoder memory. RGB, planar RGB, 8-bit grayscale,
 bilevel, palettes, and RGBA are normalized to RGB. Unsupported axes, color
 spaces, and non-palette high-bit-depth samples are rejected explicitly.
 
-Each task independently reads up to 128 context rows above and below its slice,
-clamped to the column box. This recovers labels crossing task boundaries without
-requiring adjacent tasks on the same worker. Only labels whose centres lie in
-the task's half-open `[y_start, y_end)` range are staged. `context_rows` is
-configurable on `DepthWorker`; the decoder's `read_depth_strip` helper itself
-still reads exactly the supplied range.
+Each task is processed incrementally using `iter_depth_strips`: the TIFF and Zarr
+store are opened once, then at most `SLICE_HEIGHT` owned rows are decoded and
+OCR'd at a time. The final strip may be shorter. `SLICE_HEIGHT` must be a positive
+integer and is independent of the original Redis task height. Programmatic callers
+can set `DepthWorker(..., strip_height=2000)`.
+
+Each strip also reads up to 128 context rows above and below, clamped to the
+column box. This recovers labels crossing internal strip or task boundaries
+without requiring adjacent tasks on the same worker. Only labels whose centres
+lie in that strip's owned half-open `[y_start, y_end)` range are retained.
+With defaults, each OCR input contains at most 2256 RGB rows. The worker releases
+one image before reading the next and closes the TIFF/store even if decoding or
+OCR fails. Numeric observations accumulate until the original task is finished.
+
+`DepthStrip` exposes `pixels`, `y_offset` (the crop's global top), and the owned
+`y_start`/`y_end` range. Both it and `iter_depth_strips` are exported from `src.depth`.
+Close a partially consumed iterator and release each strip before requesting
+the next. The existing `read_depth_strip(task)` helper still reads exactly the
+supplied range as one array. Native TIFF tile/strip size still controls minimum
+decoder memory; bounded OCR windows do not change a source file's block layout.
 
 Each detected local row is offset by the context crop's absolute top and written directly
 to Hash `log:<log_id>:depths`, for example `HSET log:0000000009:depths 4492 17200.0`.
@@ -236,6 +251,9 @@ path, column box, and requested rows, so duplicate dispatches with different
 stream IDs count only once. The worker then calls XACK. Lost commit responses or
 failed acknowledgements can be retried without repeating OCR or incrementing
 completion again. Empty successful tasks follow the same completion protocol.
+Internal image strips never count as separate Redis tasks: results are committed
+only after every strip succeeds, followed by one completion/acknowledgement for
+the original task. An error on any strip publishes no partial task results.
 The commit also records the slice in `log:<id>:slices:depth:completed`, matching
 dispatcher recovery. The worker calls `PipelineRedisClient.complete_depth_chunk`
 after staging so the provided client acknowledges and evaluates the merge barrier.
@@ -292,3 +310,19 @@ before OCR, then its reference depth is compared with `depth_at`. Reference
 depths are never supplied to the extractor. Original dataset files are unchanged
 and are not included in repository fixtures. See `DEPTH_VALIDATION.md` for measured
 results and remaining limitations.
+
+Incremental task loading was checked on 4,500 owned rows each from log06, MC761
+MD, MC765 TVD, and Rio Nueces 222. All decoded windows matched independent
+rasterio crops; OCR inputs contained at most 2,256 rows. Tesseract emitted
+12, 22, 22, and 37 observations respectively, with one completion per original
+task using `PipelineRedisClient` backed by fakeredis. These counts are smoke
+checks, not manually verified accuracy measurements or a live Redis test.
+
+The depth, staging, and lazy-import regressions pass (117 tests):
+
+```bash
+uv run --locked pytest -q tests/test_worker_depth.py tests/test_depth_extraction.py tests/test_depth_staging.py tests/test_lazy_imports.py --deselect='tests/test_lazy_imports.py::test_import_defers_heavy_dependencies[src.dispatcher]'
+```
+
+The excluded dispatcher test has an existing import-time Redis connection side
+effect unrelated to depth strip loading.

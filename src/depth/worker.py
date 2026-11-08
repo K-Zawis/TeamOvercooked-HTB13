@@ -1,7 +1,8 @@
 """Consume depth-strip tasks and publish global pixel/depth anchors to Redis.
 
 Uses src.redis_client.PipelineRedisClient for the central Redis broker.
-Configuration comes from REDIS_HOST, REDIS_PORT, REDIS_DB, and CONSUMER_NAME.
+Configuration comes from REDIS_HOST, REDIS_PORT, REDIS_DB, CONSUMER_NAME,
+and SLICE_HEIGHT (the maximum number of owned rows per OCR input).
 """
 
 import hashlib
@@ -11,8 +12,13 @@ import math
 import socket
 import time
 import uuid
-from dataclasses import dataclass, replace
+from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from os import getenv
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 lazy import numpy as np
 lazy import tifffile
@@ -90,67 +96,112 @@ class DepthTask:
         return cls(log_id, image_path, (left, top, right, bottom), start, end)
 
 
-def read_depth_strip(task: DepthTask) -> np.ndarray:
-    """Decode the requested first-page TIFF ROI, not a full-page NumPy array.
+@dataclass(frozen=True)
+class DepthStrip:
+    """One RGB crop with context and its owned global half-open row range."""
 
-    TIFF strips/tiles intersecting the ROI are decoded via tifffile's Zarr store.
-    Native TIFF block size still determines the minimum amount of decoding.
-    """
+    # Python 3.15 dataclasses also resolves dotted string annotations. An alias
+    # imported only for static checking keeps NumPy unloaded during startup.
+    pixels: "NDArray"
+    y_offset: int
+    y_start: int
+    y_end: int
+
+
+@contextmanager
+def _open_depth_image(task: DepthTask):
+    """Validate the first page and close both resources on every exit path."""
     with tifffile.TiffFile(task.image_path) as tif:
         page = tif.pages[0]
-        left, top, right, bottom = task.bbox
+        _, _, right, bottom = task.bbox
         if right > page.imagewidth or bottom > page.imagelength:
             raise ValueError("bbox extends outside the TIFF image")
-        axes = page.axes
-        if axes not in ("YX", "YXS", "SYX"):
-            raise ValueError(f"unsupported TIFF page axes: {axes}")
+        if page.axes not in ("YX", "YXS", "SYX"):
+            raise ValueError(f"unsupported TIFF page axes: {page.axes}")
         if page.photometric not in (0, 1, 2, 3):
             raise ValueError(f"unsupported TIFF photometric: {page.photometric}")
-        selection = tuple(
-            slice(task.y_start, task.y_end)
-            if a == "Y"
-            else slice(left, right)
-            if a == "X"
-            else slice(None)
-            for a in axes
-        )
         store = page.aszarr(maxworkers=1)
         try:
-            pixels = np.asarray(zarr.open(store, mode="r")[selection])
+            yield page, zarr.open(store, mode="r")
         finally:
             store.close()
-        if axes == "SYX":
-            pixels = np.moveaxis(pixels, 0, -1)
-        if page.photometric == 3:  # TIFF palette entries are unsigned 16-bit RGB.
-            if pixels.ndim != 2 or page.colormap is None:
-                raise ValueError("invalid paletted TIFF")
-            pixels = (
-                page.colormap[:, pixels.astype(np.intp)].transpose(1, 2, 0) >> 8
+
+
+def _read_rgb_window(page, image, left, right, y_start, y_end) -> np.ndarray:
+    """Decode and normalize only the selected window, sharing format handling."""
+    selection = tuple(
+        slice(y_start, y_end) if axis == "Y" else
+        slice(left, right) if axis == "X" else slice(None)
+        for axis in page.axes
+    )
+    pixels = np.asarray(image[selection])
+    if page.axes == "SYX":
+        pixels = np.moveaxis(pixels, 0, -1)
+    if page.photometric == 3:  # TIFF palette entries are unsigned 16-bit RGB.
+        if pixels.ndim != 2 or page.colormap is None:
+            raise ValueError("invalid paletted TIFF")
+        pixels = (
+            page.colormap[:, pixels.astype(np.intp)].transpose(1, 2, 0) >> 8
+        ).astype(np.uint8)
+    else:
+        if pixels.dtype == np.bool_:
+            pixels = pixels.astype(np.uint8) * 255
+        if pixels.dtype != np.uint8:
+            raise ValueError(
+                f"unsupported TIFF sample type: {pixels.dtype}; expected 8-bit RGB/grayscale"
+            )
+        if page.photometric == 0:  # MINISWHITE: zero is white.
+            pixels = 255 - pixels
+        if pixels.ndim == 2:
+            pixels = np.repeat(pixels[:, :, None], 3, axis=2)
+        elif pixels.shape[2] == 1:
+            pixels = np.repeat(pixels, 3, axis=2)
+        elif pixels.shape[2] == 4:
+            # Composite alpha onto white, including associated-alpha TIFFs.
+            alpha = pixels[:, :, 3:4].astype(np.float32) / 255
+            rgb = pixels[:, :, :3].astype(np.float32)
+            associated = bool(page.extrasamples and page.extrasamples[0] == 1)
+            pixels = np.clip(
+                (rgb if associated else rgb * alpha) + 255 * (1 - alpha), 0, 255
             ).astype(np.uint8)
-        else:
-            if pixels.dtype == np.bool_:
-                pixels = pixels.astype(np.uint8) * 255
-            if pixels.dtype != np.uint8:
-                raise ValueError(
-                    f"unsupported TIFF sample type: {pixels.dtype}; expected 8-bit RGB/grayscale"
-                )
-            if page.photometric == 0:  # MINISWHITE: zero is white.
-                pixels = 255 - pixels
-            if pixels.ndim == 2:
-                pixels = np.repeat(pixels[:, :, None], 3, axis=2)
-            elif pixels.shape[2] == 1:
-                pixels = np.repeat(pixels, 3, axis=2)
-            elif pixels.shape[2] == 4:
-                # Composite alpha onto white, including associated-alpha TIFFs.
-                alpha = pixels[:, :, 3:4].astype(np.float32) / 255
-                rgb = pixels[:, :, :3].astype(np.float32)
-                associated = bool(page.extrasamples and page.extrasamples[0] == 1)
-                pixels = np.clip(
-                    (rgb if associated else rgb * alpha) + 255 * (1 - alpha), 0, 255
-                ).astype(np.uint8)
-        if pixels.shape != (task.y_end - task.y_start, right - left, 3):
-            raise ValueError(f"unsupported TIFF channel layout: {pixels.shape}")
-        return np.ascontiguousarray(pixels)
+    if pixels.shape != (y_end - y_start, right - left, 3):
+        raise ValueError(f"unsupported TIFF channel layout: {pixels.shape}")
+    return np.ascontiguousarray(pixels)
+
+
+def read_depth_strip(task: DepthTask) -> np.ndarray:
+    """Decode exactly the requested first-page TIFF ROI as one RGB array."""
+    with _open_depth_image(task) as (page, image):
+        return _read_rgb_window(page, image, task.bbox[0], task.bbox[2],
+                                task.y_start, task.y_end)
+
+
+def _validate_strip_options(strip_height, context_rows):
+    if isinstance(strip_height, bool) or not isinstance(strip_height, int) or strip_height <= 0:
+        raise ValueError("strip_height must be a positive integer")
+    if isinstance(context_rows, bool) or not isinstance(context_rows, int) or context_rows < 0:
+        raise ValueError("context_rows must be a nonnegative integer")
+
+
+def iter_depth_strips(task: DepthTask, strip_height=2000, context_rows=128):
+    """Yield bounded RGB windows, opening the TIFF/store once for this task.
+
+    Each crop includes context clamped to the column bounds. Only observations
+    inside its owned [y_start, y_end) range belong to the task result. Consumers
+    must release each DepthStrip before requesting the next; close the iterator
+    explicitly if stopping early. Native TIFF block size bounds decoder granularity.
+    """
+    _validate_strip_options(strip_height, context_rows)
+    with _open_depth_image(task) as (page, image):
+        for start in range(task.y_start, task.y_end, strip_height):
+            end = min(start + strip_height, task.y_end)
+            top = max(task.bbox[1], start - context_rows)
+            bottom = min(task.bbox[3], end + context_rows)
+            pixels = _read_rgb_window(page, image, task.bbox[0], task.bbox[2], top, bottom)
+            try:
+                yield DepthStrip(pixels, top, start, end)
+            finally:
+                del pixels
 
 
 class DepthWorker:
@@ -162,13 +213,9 @@ class DepthWorker:
         consumer_name=None,
         group=CONSUMER_GROUP,
         context_rows=128,
+        strip_height=2000,
     ):
-        if (
-            isinstance(context_rows, bool)
-            or not isinstance(context_rows, int)
-            or context_rows < 0
-        ):
-            raise ValueError("context_rows must be a nonnegative integer")
+        _validate_strip_options(strip_height, context_rows)
         self.client = redis_client
         self.redis = self.client.r
         self.client.init_consumer_groups()
@@ -178,6 +225,7 @@ class DepthWorker:
         )
         self.group = group
         self.context_rows = context_rows
+        self.strip_height = strip_height
         try:
             # Start at the backlog, not just messages arriving after startup.
             self.redis.xgroup_create(TASK_STREAM, group, id="0-0", mkstream=True)
@@ -189,27 +237,25 @@ class DepthWorker:
         """Independently extract, stage and count one logical task exactly once."""
         if self.redis.sismember(staging_keys(task.log_id)[2], task.task_id):
             return {}
-        context = replace(
-            task,
-            y_start=max(task.bbox[1], task.y_start - self.context_rows),
-            y_end=min(task.bbox[3], task.y_end + self.context_rows),
-        )
-        pixels = read_depth_strip(context)
-        local = self.extractor.extract_observations(pixels)["y_to_depth_map"]
-        if any(
-            isinstance(y, bool)
-            or not isinstance(y, (int, np.integer))
-            or not 0 <= y < len(pixels)
-            or not math.isfinite(depth)
-            for y, depth in local.items()
-        ):
-            raise ValueError("extractor produced an invalid depth observation")
-        # Adjacent tasks may see the same context; exactly one owns each centre.
-        global_map = {
-            context.y_start + int(y): depth
-            for y, depth in local.items()
-            if task.y_start <= context.y_start + y < task.y_end
-        }
+        global_map = {}
+        with closing(iter_depth_strips(task, self.strip_height, self.context_rows)) as strips:
+            for strip in strips:
+                try:
+                    local = self.extractor.extract_observations(strip.pixels)["y_to_depth_map"]
+                    if any(
+                        isinstance(y, bool)
+                        or not isinstance(y, (int, np.integer))
+                        or not 0 <= y < len(strip.pixels)
+                        or not math.isfinite(depth)
+                        for y, depth in local.items()
+                    ):
+                        raise ValueError("extractor produced an invalid depth observation")
+                    global_map.update({
+                        strip.y_offset + int(y): depth for y, depth in local.items()
+                        if strip.y_start <= strip.y_offset + y < strip.y_end
+                    })
+                finally:
+                    del strip
         committed = commit_depth_result(
             self.redis,
             task.log_id,
@@ -286,7 +332,11 @@ def main():
         port=int(getenv("REDIS_PORT", "6379")),
         db=int(getenv("REDIS_DB", "0")),
     )
-    worker = DepthWorker(client, consumer_name=getenv("CONSUMER_NAME", "DepthWorker"))
+    worker = DepthWorker(
+        client,
+        consumer_name=getenv("CONSUMER_NAME", "DepthWorker"),
+        strip_height=int(getenv("SLICE_HEIGHT", "2000")),
+    )
     worker.run_forever()
 
 

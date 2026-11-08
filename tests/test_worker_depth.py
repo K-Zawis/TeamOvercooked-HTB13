@@ -1,5 +1,6 @@
 import json
-from unittest.mock import patch
+import weakref
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -7,7 +8,7 @@ import tifffile
 
 from src.depth import DepthExtractionError, OCRToken, DepthExtractor
 from src.redis_client import PipelineRedisClient
-from src.depth.worker import DepthTask, DepthWorker, TASK_STREAM, read_depth_strip
+from src.depth.worker import DepthTask, DepthWorker, TASK_STREAM, iter_depth_strips, read_depth_strip
 
 
 def payload(path, *, log_id="0000000009", start=100, end=300, bbox=None):
@@ -108,8 +109,15 @@ def test_tifffile_region_decoding(tmp_path, layout):
     # Guard against accidentally decoding a whole page before cropping.
     with patch.object(tifffile.TiffPage, "asarray", side_effect=AssertionError("full-page decode")):
         pixels = read_depth_strip(task)
+        strips = list(iter_depth_strips(task, strip_height=10, context_rows=3))
     np.testing.assert_array_equal(pixels, expected[20:43, 7:41])
     assert pixels.dtype == np.uint8 and pixels.flags.c_contiguous
+    assert [(s.y_start, s.y_end) for s in strips] == [(20, 30), (30, 40), (40, 43)]
+    for strip in strips:
+        assert len(strip.pixels) <= 16
+        assert strip.pixels.dtype == np.uint8 and strip.pixels.flags.c_contiguous
+        np.testing.assert_array_equal(strip.pixels, expected[
+            strip.y_offset:strip.y_offset+len(strip.pixels), 7:41])
 
 
 def test_out_of_image_bbox_rejected_before_decoding(image_path):
@@ -328,7 +336,7 @@ def test_main_defaults_only_poll_dispatched_tasks(monkeypatch):
     from src.depth import worker as worker_depth
     client = make_client()
     configured, running = [], []
-    for variable in ("REDIS_HOST", "REDIS_PORT", "REDIS_DB", "CONSUMER_NAME"):
+    for variable in ("REDIS_HOST", "REDIS_PORT", "REDIS_DB", "CONSUMER_NAME", "SLICE_HEIGHT"):
         monkeypatch.delenv(variable, raising=False)
     def connect(**kwargs):
         configured.append(kwargs)
@@ -343,6 +351,7 @@ def test_main_defaults_only_poll_dispatched_tasks(monkeypatch):
     assert len(running) == 1
     assert running[0].client is client
     assert running[0].consumer_name == "DepthWorker"
+    assert running[0].strip_height == 2000
     assert client.r.xlen(client.STREAM_DEPTH) == 0
 
 
@@ -359,11 +368,170 @@ def test_main_uses_environment_variables(monkeypatch):
     monkeypatch.setenv("REDIS_PORT", "6380")
     monkeypatch.setenv("REDIS_DB", "2")
     monkeypatch.setenv("CONSUMER_NAME", "depth-1")
+    monkeypatch.setenv("SLICE_HEIGHT", "512")
     worker_depth.main()
     assert configured == [{"host": "redis", "port": 6380, "db": 2}]
     assert running[0].client is client
     assert running[0].consumer_name == "depth-1"
     assert running[0].group == client.GROUP_DEPTH
+    assert running[0].strip_height == 512
+
+
+@pytest.fixture
+def large_depth_task(tmp_path):
+    path = tmp_path / "large.tif"
+    pixels = np.full((6000, 80, 3), 255, np.uint8)
+    # A marker exactly at each internal boundary and near the last strip's end.
+    for y in (150, 2100, 4100, 5850):
+        pixels[y, 20] = [1, 2, 3]
+    tifffile.imwrite(path, pixels, photometric="rgb", compression="lzw", rowsperstrip=16)
+    return DepthTask.from_fields(payload(path, start=100, end=5900, bbox=[5, 100, 75, 5900]))
+
+
+@pytest.fixture
+def opened_depth_resources(monkeypatch):
+    """Observe actual TIFF handles and stores without replacing their behavior."""
+    from src.depth import worker as worker_depth
+    original_open, original_store = tifffile.TiffFile, tifffile.TiffPage.aszarr
+    handles, stores = [], []
+    def open_file(*args, **kwargs):
+        handle = original_open(*args, **kwargs)
+        handles.append(handle)
+        return handle
+    def open_store(page, *args, **kwargs):
+        store = original_store(page, *args, **kwargs)
+        store.close = Mock(wraps=store.close)
+        stores.append(store)
+        return store
+    monkeypatch.setattr(worker_depth.tifffile, "TiffFile", open_file)
+    monkeypatch.setattr(tifffile.TiffPage, "aszarr", open_store)
+    return handles, stores
+
+
+def test_iterator_bounds_offsets_and_single_open(large_depth_task, opened_depth_resources):
+    from src.depth import worker as worker_depth
+    windows = []
+    decode = worker_depth._read_rgb_window
+    def record(page, image, left, right, start, end):
+        windows.append((start, end))
+        return decode(page, image, left, right, start, end)
+    with patch.object(worker_depth, "_read_rgb_window", side_effect=record):
+        strips = list(iter_depth_strips(large_depth_task))
+    assert [(s.y_start, s.y_end) for s in strips] == [(100, 2100), (2100, 4100), (4100, 5900)]
+    assert windows == [(100, 2228), (1972, 4228), (3972, 5900)]
+    assert [s.y_offset for s in strips] == [100, 1972, 3972]
+    assert max(len(s.pixels) for s in strips) <= 2256
+    handles, stores = opened_depth_resources
+    assert len(handles) == len(stores) == 1
+    assert handles[0].filehandle.closed
+    stores[0].close.assert_called_once_with()
+
+
+def test_iterator_closes_resources_when_stopped_early(large_depth_task, opened_depth_resources):
+    strips = iter_depth_strips(large_depth_task)
+    first = next(strips)
+    assert first.y_start == 100
+    strips.close()
+    handles, stores = opened_depth_resources
+    assert handles[0].filehandle.closed
+    stores[0].close.assert_called_once_with()
+
+
+def test_large_task_preserves_boundary_ownership_and_counts_once(large_depth_task):
+    class MarkerExtractor:
+        sizes = []
+        def extract_observations(self, image):
+            self.sizes.append(len(image))
+            rows = np.flatnonzero(np.all(image[:, 15] == [1, 2, 3], axis=1))
+            return {"y_to_depth_map": {int(y): 4100.0 for y in rows}}
+    client = make_client()
+    extractor = MarkerExtractor()
+    worker = DepthWorker(client, extractor)
+    task = large_depth_task
+    data = payload(task.image_path, start=task.y_start, end=task.y_end, bbox=list(task.bbox))
+    enqueue(client, data)
+    assert worker.run_once(block_ms=1)
+    assert extractor.sizes == [2128, 2256, 1928]
+    assert client.r.hgetall(f"log:{task.log_id}:depths") == {
+        "150": "4100.0", "2100": "4100.0", "4100": "4100.0", "5850": "4100.0",
+    }
+    assert client.r.hget(f"log:{task.log_id}:meta", "completed_depth_chunks") == "1"
+    assert client.r.smembers(f"log:{task.log_id}:slices:depth:completed") == {"100:5900"}
+    enqueue(client, data)
+    assert worker.run_once(block_ms=1)
+    assert len(extractor.sizes) == 3  # duplicate task never decodes/OCRs again
+    assert client.r.hget(f"log:{task.log_id}:meta", "completed_depth_chunks") == "1"
+
+
+def test_worker_releases_each_pixel_array_before_next_strip(large_depth_task):
+    class TrackingExtractor:
+        def __init__(self):
+            self.images = []
+        def extract_observations(self, image):
+            if self.images:
+                assert self.images[-1]() is None, "previous image strip was retained"
+            self.images.append(weakref.ref(image))
+            return {"y_to_depth_map": {}}
+    extractor = TrackingExtractor()
+    DepthWorker(make_client(), extractor).process_task(large_depth_task)
+    assert len(extractor.images) == 3
+    assert all(image() is None for image in extractor.images)
+
+
+@pytest.mark.parametrize("failure", ["ocr", "decode"])
+def test_later_strip_failure_closes_resources_without_partial_commit(
+    large_depth_task, opened_depth_resources, failure,
+):
+    from src.depth import worker as worker_depth
+    class FailingExtractor(FakeExtractor):
+        calls = 0
+        def extract_observations(self, image):
+            self.calls += 1
+            if self.calls == 2 and failure == "ocr":
+                raise DepthExtractionError("second strip failed")
+            return super().extract_observations(image)
+    original_decode = worker_depth._read_rgb_window
+    decode_calls = []
+    def decode(*args):
+        decode_calls.append(args[-2:])
+        if len(decode_calls) == 2 and failure == "decode":
+            raise ValueError("second strip failed")
+        return original_decode(*args)
+    task = large_depth_task
+    client = make_client()
+    worker = DepthWorker(client, FailingExtractor(), context_rows=0)
+    mid = enqueue(client, payload(task.image_path, start=100, end=5900, bbox=list(task.bbox)))
+    with patch.object(worker_depth, "_read_rgb_window", side_effect=decode):
+        with pytest.raises((DepthExtractionError, ValueError), match="second strip"):
+            worker.run_once(block_ms=1)
+    assert not hashes(client)
+    assert mid in pending(client, worker)
+    assert not client.r.exists(f"log:{task.log_id}:depth_completed_tasks")
+    handles, stores = opened_depth_resources
+    assert handles[0].filehandle.closed
+    stores[0].close.assert_called_once_with()
+    worker.extractor = FakeExtractor()
+    assert worker.run_once(block_ms=1)
+    assert client.r.hgetall(f"log:{task.log_id}:depths") == {
+        "120": "4100.0", "2120": "4100.0", "4120": "4100.0",
+    }
+    assert client.r.hget(f"log:{task.log_id}:meta", "completed_depth_chunks") == "1"
+    assert not pending(client, worker)
+    assert len(handles) == len(stores) == 2
+    assert all(handle.filehandle.closed for handle in handles)
+    assert all(store.close.call_count == 1 for store in stores)
+
+
+@pytest.mark.parametrize("height", [0, -1, True, 1.5, "2000"])
+def test_invalid_strip_height_rejected_before_opening_or_redis(image_path, height):
+    task = DepthTask.from_fields(payload(image_path))
+    client = make_client()
+    with patch("src.depth.worker.tifffile.TiffFile", side_effect=AssertionError("opened TIFF")):
+        with pytest.raises(ValueError, match="strip_height"):
+            list(iter_depth_strips(task, strip_height=height))
+        with pytest.raises(ValueError, match="strip_height"):
+            DepthWorker(client, FakeExtractor(), strip_height=height)
+    assert client.r.dbsize() == 0
 
 
 def test_run_forever_continues_polling_when_idle_and_backs_off_on_error():
