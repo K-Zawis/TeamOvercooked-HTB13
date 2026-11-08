@@ -1,11 +1,14 @@
 """Task-payload adapter for the document-local lithology pipeline."""
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import MutableMapping
+import warnings
 
 lazy import numpy as np
-lazy from PIL import Image
+lazy import rasterio
+lazy from rasterio.enums import ColorInterp
+lazy from rasterio.errors import NotGeoreferencedWarning
+lazy from rasterio.windows import Window
 
 from .classifier import analyze_lithology
 from .intervals import merge_intervals, restrict_intervals
@@ -85,23 +88,65 @@ class LithologyTaskResult:
         }
 
 
-def read_task_images(task: LithologyTask) -> tuple[np.ndarray, np.ndarray]:
-    """Read the owned lithology strip and complete legend crop as RGB arrays."""
-    left, _, right, _ = task.column_bbox
-    with Image.open(Path(task.image_path)) as image:
-        if (
-            task.column_bbox[2] > image.width
-            or task.column_bbox[3] > image.height
-            or task.legend_bbox[2] > image.width
-            or task.legend_bbox[3] > image.height
-        ):
-            raise ValueError("task bounding box extends outside the image")
-        column = np.asarray(
-            image.crop((left, task.y_start, right, task.y_end)).convert("RGB"),
-            dtype=np.uint8,
+def _read_rgb_window(dataset, box: Box) -> np.ndarray:
+    """Decode one TIFF window and normalize its bands to contiguous RGB."""
+    left, top, right, bottom = box
+    window = Window(left, top, right - left, bottom - top)
+    pixels = dataset.read(window=window)
+    if pixels.dtype != np.uint8:
+        raise ValueError(
+            f"unsupported TIFF sample type {pixels.dtype}; expected 8-bit samples"
         )
-        legend = np.asarray(image.crop(task.legend_bbox).convert("RGB"), dtype=np.uint8)
-    return np.ascontiguousarray(column), np.ascontiguousarray(legend)
+
+    color_interpretation = tuple(dataset.colorinterp)
+    if pixels.shape[0] == 1:
+        values = pixels[0]
+        if color_interpretation == (ColorInterp.palette,):
+            palette = dataset.colormap(1)
+            lookup = np.zeros((256, 3), dtype=np.uint8)
+            for index, color in palette.items():
+                if 0 <= index < len(lookup):
+                    lookup[index] = color[:3]
+            rgb = lookup[values]
+        else:
+            # GDAL exposes bilevel TIFFs as 0/1 uint8 samples.
+            if values.size and values.max() <= 1:
+                values = values * np.uint8(255)
+            rgb = np.repeat(values[:, :, None], 3, axis=2)
+    elif pixels.shape[0] >= 3:
+        rgb = np.moveaxis(pixels[:3], 0, -1)
+        if pixels.shape[0] >= 4 and ColorInterp.alpha in color_interpretation:
+            alpha_index = color_interpretation.index(ColorInterp.alpha)
+            alpha = pixels[alpha_index].astype(np.float32)[:, :, None] / 255.0
+            rgb = np.rint(rgb.astype(np.float32) * alpha + 255.0 * (1.0 - alpha))
+            rgb = rgb.astype(np.uint8)
+    else:
+        raise ValueError(f"unsupported TIFF band count: {pixels.shape[0]}")
+    return np.ascontiguousarray(rgb, dtype=np.uint8)
+
+
+def read_task_images(
+    task: LithologyTask,
+    *,
+    include_legend: bool = True,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Decode the task's TIFF strip and, when needed, its legend window."""
+    left, _, right, _ = task.column_bbox
+    column_box = (left, task.y_start, right, task.y_end)
+    boxes = (column_box, task.legend_bbox) if include_legend else (column_box,)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with rasterio.open(task.image_path) as dataset:
+            for box in boxes:
+                if box[2] > dataset.width or box[3] > dataset.height:
+                    raise ValueError("task bounding box extends outside the image")
+            column = _read_rgb_window(dataset, column_box)
+            legend = (
+                _read_rgb_window(dataset, task.legend_bbox)
+                if include_legend
+                else None
+            )
+    return column, legend
 
 
 def process_lithology_task(
@@ -120,10 +165,14 @@ def process_lithology_task(
         if isinstance(payload, LithologyTask)
         else LithologyTask.from_payload(payload)
     )
-    column_image, legend_image = read_task_images(task)
     cache_key = (task.log_id, task.image_path, task.legend_bbox)
     legend = legend_cache.get(cache_key) if legend_cache is not None else None
+    column_image, legend_image = read_task_images(
+        task,
+        include_legend=legend is None,
+    )
     if legend is None:
+        assert legend_image is not None
         legend = tuple(read_legend(legend_image, recognizer))
         if legend_cache is not None:
             legend_cache[cache_key] = legend

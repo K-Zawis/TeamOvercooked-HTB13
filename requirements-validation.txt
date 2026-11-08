@@ -75,6 +75,7 @@ pytest==9.2.0
 pyyaml==6.0.3
     # via donfig
 rasterio==1.5.2
+    # via team-overcooked-htb13
 redis==8.1.0
     # via
     #   fakeredis
