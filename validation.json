@@ -1,0 +1,33 @@
+{
+  "original_tests_success": true,
+  "synthetic_geometries": 105,
+  "development_intervals": 22,
+  "source": "saved overlays, not original TIFF",
+  "held_out_used": false,
+  "names_accepted": 0,
+  "rule": "centre first, native pixels, max 128x128; quarter checks when interior height >384",
+  "patch_counts": [
+    1,
+    1,
+    1,
+    3,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    3,
+    1,
+    3,
+    1,
+    3,
+    1
+  ]
+}

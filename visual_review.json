@@ -1,0 +1,29 @@
+{
+  "screening_intervals": 22,
+  "strong_contact_suggestions": [
+    "i00008",
+    "i00010",
+    "i00013",
+    "i00017"
+  ],
+  "contact_sand_probabilities": [
+    0.97,
+    0.98,
+    0.98,
+    0.99
+  ],
+  "individual_sand_probabilities": [
+    0.08,
+    0.06,
+    0.05,
+    0.04
+  ],
+  "individual_top_choices": [
+    "mixed",
+    "mixed",
+    "mixed",
+    "mixed"
+  ],
+  "interpretation": "Unstable image assessment. Does not establish mixed geology. No accepted rock names.",
+  "source": "saved overlays"
+}
