@@ -105,7 +105,7 @@ def read_task_images(task: LithologyTask) -> tuple[np.ndarray, np.ndarray]:
 
 
 def process_lithology_task(
-    payload,
+    payload: dict | LithologyTask,
     *,
     recognizer: TextRecognizer | None = None,
     legend_cache: MutableMapping[tuple, tuple[LegendPattern, ...]] | None = None,
@@ -115,7 +115,11 @@ def process_lithology_task(
     unknown_distance: float = 0.38,
 ) -> LithologyTaskResult:
     """Process one payload delivered by the infrastructure task listener."""
-    task = LithologyTask.from_payload(payload)
+    task = (
+        payload
+        if isinstance(payload, LithologyTask)
+        else LithologyTask.from_payload(payload)
+    )
     column_image, legend_image = read_task_images(task)
     cache_key = (task.log_id, task.image_path, task.legend_bbox)
     legend = legend_cache.get(cache_key) if legend_cache is not None else None
