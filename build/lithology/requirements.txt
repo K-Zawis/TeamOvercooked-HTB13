@@ -25,3 +25,5 @@ typing-extensions==4.16.0
 typing-inspection==0.4.5
 uvicorn==0.54.0
 zarr==3.4.2
+
+rasterio
