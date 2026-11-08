@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, type Doc, type Interval, type Status } from "./api";
 import { HoverCard, LithColumn, type BedHover } from "./Column";
+import { Chat } from "./Chat";
 import { GeoMap } from "./GeoMap";
 import { HatchDefs } from "./Hatch";
 import { FALLBACK_STYLE, buildStyles, ft, normLith, rockType } from "./lith";
@@ -384,6 +385,7 @@ export default function App() {
   return (
     <div className="app">
       <HatchDefs />
+      <Chat doc={all.find((d) => d.log_id === selected)} status={status} hoverRock={hoverRock} />
       <header className="top">
         <span className="sp" />
         <span className={offline || health === "down" ? "bad" : ""}>

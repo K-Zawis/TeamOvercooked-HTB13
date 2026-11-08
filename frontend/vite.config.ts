@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Plugin } from "vite";
+import { chatApi } from "./vite.chat";
 
 // The dispatcher (FastAPI) listens on :8000. In dev the browser talks to this server and the
 // routes below are forwarded to it, so no CORS setup is needed on the backend.
@@ -48,7 +49,7 @@ export default defineConfig(({ mode }) => {
   const routes =["/health", "/status", "/live", "/batch", "/reset", "/api"];
   const proxy = Object.fromEntries(routes.map((r) => [r, { target, changeOrigin: true }]));
   return {
-    plugins: [intervals(outputDir, datasetDir), react(), tailwindcss()],
+    plugins: [intervals(outputDir, datasetDir), chatApi(env), react(), tailwindcss()],
     server: { port: 5173, proxy },
     preview: { proxy },
   };
