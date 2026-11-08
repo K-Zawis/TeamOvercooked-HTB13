@@ -103,7 +103,7 @@ def process_document(csv_path, data_dir, legend_dir):
             staged = Path(tmp) / "evidence"
             raster = base.Raster(image)
             try:
-                centre.prepare(read_intervals(csv_path),
+                prepared_rows = centre.prepare(read_intervals(csv_path),
                                metadata["bounding_boxes"]["interpreted_lithology_column"],
                                raster.read, centre.refs(spec, legend.parent), staged, identity)
             finally:
@@ -112,7 +112,7 @@ def process_document(csv_path, data_dir, legend_dir):
             if evidence.exists():
                 evidence.rename(Path(tmp) / "old-evidence")
             staged.rename(evidence)
-        logger.info("Prepared motif slices for %s; review template available at %s", log_id,
+        logger.info("Prepared %d classified segments for %s; review template available at %s", len(prepared_rows), log_id,
                     evidence / "decision_template.json")
 
     decision_hash = filehash(decisions) if decisions.is_file() else None

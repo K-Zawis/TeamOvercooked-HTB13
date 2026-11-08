@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY centre_interval.py interval_legend.py pipeline.py overlay.py ./
+COPY centre_interval.py interval_legend.py pipeline.py overlay.py segmentation.py ./
 
 ENTRYPOINT ["python"]
 CMD ["pipeline.py"]

@@ -247,7 +247,7 @@ def test_automatic_results_need_no_decisions_and_are_idempotent(pipeline, docume
     assert target.stat().st_mtime_ns == before
 
 
-def test_disagreeing_depth_slices_keep_accepted_rock_label_and_preserve_depths(pipeline, document):
+def test_internal_material_boundary_produces_two_classified_segments(pipeline, document):
     csv_path, data, legends = document
     image = data / 'images' / 'scan.tif'
     pixels = Image.new('RGB', (80, 100), 'white')
@@ -259,16 +259,12 @@ def test_disagreeing_depth_slices_keep_accepted_rock_label_and_preserve_depths(p
     csv_path.write_text('top_depth,bottom_depth,lithology,confidence,top_y,bottom_y,cluster_id\n'
                         '100.000,200.000,Original,0.900,0,100,c0\n')
     pipeline.process_document(*document)
-    row = pipeline.base.load(csv_path.with_suffix('.classified.json'))[0]
-    assert row['lithology'] == row['proposal_lithology']
-    assert row['lithology'] in {'Sand', 'Shale'}
-    assert row['proposal_score'] >= .5
-    assert row['classification_status'] == 'proposal_accepted'
-    assert row['slice_disagreement'] is True
-    assert (row['top_depth'], row['bottom_depth'], row['top_y'], row['bottom_y']) == ('100.000', '200.000', 0, 100)
-    evidence = pipeline.base.load(csv_path.with_suffix('.centre') / 'evidence.json')[0]
-    assert {s['lithology'] for s in evidence['slices']} == {'Sand', 'Shale'}
-    assert all(s['box'][3] - s['box'][1] == 40 for s in evidence['slices'])
+    rows = pipeline.base.load(csv_path.with_suffix('.classified.json'))
+    assert [(r['top_y'], r['bottom_y'], r['lithology']) for r in rows] == [(0, 50, 'Sand'), (50, 100, 'Shale')]
+    assert [(r['top_depth'], r['bottom_depth']) for r in rows] == [('100.000', '150.000'), ('150.000', '200.000')]
+    assert all(r['parent_top_y'] == 0 and r['parent_bottom_y'] == 100 for r in rows)
+    assert all(r['depth_method'] == 'linear_within_parent' for r in rows)
+    assert all(r['classification_status'] == 'proposal_accepted' for r in rows)
 
 
 def test_optional_review_accepts_half_without_old_margin_gate(pipeline, document):
@@ -358,3 +354,95 @@ def test_overlay_failure_preserves_previous_deliverables(pipeline, document):
         with pytest.raises(OSError):
             pipeline.process_document(*document)
     assert all(p.read_bytes() == contents for p, contents in original.items())
+
+
+@pytest.mark.parametrize('supported_depths', [True, False])
+def test_all_thin_interbeds_are_segmented_classified_and_covered(pipeline, document, supported_depths):
+    csv_path, data, legends = document
+    height = 120
+    bands = [(18, 19), (33, 35), (61, 65), (80, 88)]
+    image = Image.new('RGB', (80, height), (128, 255, 128))
+    for top, bottom in bands:
+        image.paste((255, 255, 0), (0, top, 80, bottom))
+    source = data / 'images' / 'scan.tif'
+    image.save(source)
+    for name, color in [('white', (255, 255, 0)), ('black', (128, 255, 128))]:
+        Image.new('RGB', (40, 40), color).save(legends / (name + '.png'))
+    spec = pipeline.base.load(legends / 'scan.legend.json')
+    spec['source_sha256'] = pipeline.filehash(source)
+    pipeline.base.save(legends / 'scan.legend.json', spec)
+    annotation_path = data / 'bbox_annotation' / 'scan.json'
+    annotation = pipeline.base.load(annotation_path)
+    annotation['bounding_boxes']['interpreted_lithology_column'] = [0, 0, 80, height]
+    pipeline.base.save(annotation_path, annotation)
+    csv_path.write_text('top_depth,bottom_depth,lithology,confidence,top_y,bottom_y,cluster_id\n'
+                        + ('0.000' if supported_depths else '') + ',120.000,Coarse,0.900,0,120,c0\n')
+    pipeline.process_document(*document)
+    rows = pipeline.base.load(csv_path.with_suffix('.classified.json'))
+    assert [(r['top_y'], r['bottom_y']) for r in rows if r['lithology'] == 'Sand'] == bands
+    assert len(rows) == 9
+    coverage = [None] * height
+    for row in rows:
+        for y in range(row['top_y'], row['bottom_y']):
+            assert coverage[y] is None
+            coverage[y] = row['lithology']
+        if supported_depths:
+            assert float(row['top_depth']) == row['top_y']
+            assert float(row['bottom_depth']) == row['bottom_y']
+        else:
+            assert row['top_depth'] == ''
+            assert row['bottom_depth'] == ('120.000' if row['bottom_y'] == height else '')
+    assert all(coverage)
+    assert all(coverage[y] == ('Sand' if any(a <= y < b for a, b in bands) else 'Shale')
+               for y in range(height))
+    # All three deliverables describe the refined segments, not the parent.
+    with csv_path.with_suffix('.classified.csv').open() as file:
+        assert len(list(csv.DictReader(file))) == 9
+    assert csv_path.with_suffix('.classified.png').is_file()
+
+
+def test_monochrome_motif_change_is_segmented_without_color_change(pipeline):
+    from segmentation import refine_intervals
+    horizontal = Image.new('RGB', (80, 90), 'white')
+    for y in range(0, 90, 8):
+        horizontal.paste('black', (0, y, 80, y + 1))
+    vertical = Image.new('RGB', (80, 90), 'white')
+    for x in range(0, 80, 8):
+        vertical.paste('black', (x, 0, x + 1, 90))
+    source = Image.new('RGB', (80, 180))
+    source.paste(horizontal, (0, 0))
+    source.paste(vertical, (0, 90))
+    refs = []
+    for key, image in [('h', horizontal.crop((0, 0, 40, 40))),
+                       ('v', vertical.crop((0, 0, 40, 40)))]:
+        refs.append(dict(id=key, label=key, im=image, feature=pipeline.base.descriptor(image)))
+    result = refine_intervals([dict(top_y=0, bottom_y=180)], [0, 0, 80, 180], source.crop, refs)
+    assert any(abs(row['bottom_y'] - 90) <= 20 for row in result[:-1])
+    assert result[0]['top_y'] == 0 and result[-1]['bottom_y'] == 180
+
+
+def test_segmentation_covers_gaps_and_ends_of_annotated_track(pipeline, document):
+    from segmentation import refine_intervals
+    refs = pipeline.centre.refs(pipeline.base.load(document[2] / 'scan.legend.json'), document[2])
+    image = Image.new('RGB', (80, 120), 'white')
+    parents = [dict(top_y=10, bottom_y=20, top_depth='10.000', bottom_depth='20.000'),
+               dict(top_y=80, bottom_y=100, top_depth='80.000', bottom_depth='100.000')]
+    rows = refine_intervals(parents, [0, 0, 80, 120], image.crop, refs)
+    assert [(r['top_y'], r['bottom_y']) for r in rows] == [(0, 10), (10, 20), (20, 80), (80, 100), (100, 120)]
+    assert sum(r['bottom_y'] - r['top_y'] for r in rows) == 120
+    assert sum(r['parent_interval_id'].startswith('gap') for r in rows) == 3
+    assert rows[0]['top_depth'] == '' and rows[-1]['bottom_depth'] == ''
+
+
+def test_band_boundary_does_not_erase_a_thin_bed(pipeline, document):
+    from segmentation import refine_intervals
+    refs = pipeline.centre.refs(pipeline.base.load(document[2] / 'scan.legend.json'), document[2])
+    image = Image.new('RGB', (80, 2100), 'white')
+    image.paste('black', (0, 2047, 80, 2055))
+    reads = []
+    def read(box):
+        reads.append(box)
+        return image.crop(box)
+    rows = refine_intervals([dict(top_y=0, bottom_y=2100)], [0, 0, 80, 2100], read, refs)
+    assert [(r['top_y'], r['bottom_y']) for r in rows] == [(0, 2047), (2047, 2055), (2055, 2100)]
+    assert max(b[3] - b[1] for b in reads) <= 2048

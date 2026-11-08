@@ -9,7 +9,7 @@ from PIL import ImageDraw, ImageFont
 
 import interval_legend as base
 
-VERSION = "labelled-overlay-1"
+VERSION = "labelled-overlay-2"
 BAND_HEIGHT = 512
 
 
@@ -48,6 +48,15 @@ def render_overlay(source, rows, box, destination):
         if not 0 <= x0 < x1 <= width or not 0 <= y0 < y1 <= height:
             raise ValueError("overlay track lies outside source image")
         font = _font()
+        max_label_width = max(font.getbbox(row.get('lithology') or 'unknown')[2]
+                              - font.getbbox(row.get('lithology') or 'unknown')[0] + 12 for row in rows)
+        # Use several label columns when beds are thinner than a text line.
+        columns = list(range(x1 + 12, width - max_label_width + 1, max_label_width + 12))
+        if not columns:
+            columns = list(range(x0 - max_label_width - 12, -1, -(max_label_width + 12)))
+        if not columns:
+            columns = [max(0, min(x1 + 12, width - max_label_width))]
+        column_bottoms = [0] * len(columns)
         labels = []
         for row in rows:
             top, bottom = row["top_y"], row["bottom_y"]
@@ -57,11 +66,11 @@ def render_overlay(source, rows, box, destination):
             bounds = font.getbbox(name)
             text_width, text_height = bounds[2] - bounds[0], bounds[3] - bounds[1]
             label_width, label_height = text_width + 12, text_height + 8
-            left = x1 + 12
-            if left + label_width > width:
-                left = max(0, x0 - label_width - 12)
-            left = max(0, min(left, width - label_width))
-            label_top = max(0, min((top + bottom - label_height) // 2, height - label_height))
+            desired_top = max(0, (top + bottom - label_height) // 2)
+            lane = min(range(len(columns)), key=lambda i: (max(desired_top, column_bottoms[i]) - desired_top, i))
+            left = columns[lane]
+            label_top = max(0, min(max(desired_top, column_bottoms[lane]), height - label_height))
+            column_bottoms[lane] = label_top + label_height + 3
             labels.append((name, bounds, left, label_top, label_width, label_height,
                            label_color(name), top, bottom))
 
@@ -78,11 +87,14 @@ def render_overlay(source, rows, box, destination):
                         # Pillow rectangles have inclusive ends; interval bounds do not.
                         draw.rectangle((x0, top - band_top, x1 - 1, bottom - 1 - band_top),
                                        fill=(*color, 85), outline=(*color, 230), width=1)
-                    if label_top < band_bottom and label_top + lh > band_top:
-                        centre_y = (top + bottom) // 2 - band_top
+                for name, bounds, left, label_top, lw, lh, color, top, bottom in labels:
+                    centre_y = (top + bottom) // 2
+                    label_y = label_top + lh // 2
+                    if min(centre_y, label_y) < band_bottom and max(centre_y, label_y) >= band_top:
                         anchor = x1 if left >= x1 else x0
                         label_edge = left if left >= x1 else left + lw
-                        draw.line((anchor, centre_y, label_edge, centre_y), fill=(*color, 255), width=1)
+                        draw.line((anchor, centre_y - band_top, label_edge, label_y - band_top), fill=(*color, 255), width=1)
+                    if label_top < band_bottom and label_top + lh > band_top:
                         draw.rectangle((left, label_top - band_top, left + lw - 1, label_top + lh - 1 - band_top),
                                        fill=(255, 255, 255, 235), outline=(*color, 255), width=1)
                         draw.text((left + 6 - bounds[0], label_top + 4 - bounds[1] - band_top),

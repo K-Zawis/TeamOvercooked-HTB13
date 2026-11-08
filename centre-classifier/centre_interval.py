@@ -4,9 +4,10 @@ from functools import partial
 from statistics import median
 from pathlib import Path
 import interval_legend as base
+from segmentation import refine_intervals
 
 STRIP_HEIGHT = 32
-SAMPLER_VERSION = 'full-motifs-auto-0.5-v2'
+SAMPLER_VERSION = 'row-boundaries-full-motifs-0.5-v3'
 
 def patches(read,box,row,strip_height=STRIP_HEIGHT):
     x0,y0,x1,y1=box;a,b=row['top_y'],row['bottom_y']
@@ -34,6 +35,7 @@ def refs(spec,root):
     return base.legend_refs(spec,root)
 
 def prepare(rows,box,read,refs,out,source_identity,mode='native_original'):
+    rows=refine_intervals(rows,box,read,refs)
     height=max(1,round(median(r['im'].height for r in refs)))
     previous=base.patches;base.patches=partial(patches,strip_height=height)
     try:return base.prepare(rows,box,read,refs,out,source_identity,mode)
