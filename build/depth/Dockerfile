@@ -6,8 +6,17 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
-COPY build/depth/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Compile dependencies without Python 3.15 wheels and provide native OCR.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/requirements.txt
+COPY build/depth/requirements.txt /app/build/depth/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/build/depth/requirements.txt
 
 COPY src/ /app/src/
 

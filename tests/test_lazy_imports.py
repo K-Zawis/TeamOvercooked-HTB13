@@ -7,7 +7,8 @@ import pytest
 
 
 @pytest.mark.parametrize("module", [
-    "worker_depth", "depth_extraction", "models", "validate_depth", "src.dispatcher",
+    "src.depth", "src.depth.worker", "src.depth.extraction", "src.depth.validation",
+    "src.worker_depth", "src.dispatcher",
     "src.worker_lithology",
 ])
 def test_import_defers_heavy_dependencies(module):
@@ -23,7 +24,7 @@ assert not loaded, f'Unexpected eager imports: {{loaded}}'
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("module", ["worker_depth", "validate_depth", "src.worker_lithology"])
+@pytest.mark.parametrize("module", ["src.depth.validation", "src.worker_lithology"])
 def test_cli_help_defers_heavy_dependencies(module):
     code = f"""
 import runpy

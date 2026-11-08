@@ -1,6 +1,6 @@
 # Streaming depth extraction
 
-`models.DepthExtractor` consumes contiguous RGB strips from a cropped depth-scale
+`src.depth.DepthExtractor` consumes contiguous RGB strips from a cropped depth-scale
 column. It reads numeric labels, rejects inconsistent OCR, and interpolates
 between trusted observations. Rock segmentation and naming remain separate.
 
@@ -26,7 +26,7 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-validation.txt
 ```
 
-Pip users can run `python worker_depth.py`, `python -m src.dispatcher`, and
+Pip users can run `python -m src.depth`, `python -m src.dispatcher`, and
 `python -m pytest` directly inside that environment; uv is not required.
 
 Keep `pyproject.toml` as the dependency source of truth. After changing dependencies,
@@ -45,7 +45,7 @@ The `--check` command exits nonzero if either export is stale or if the lockfile
 no longer matches `pyproject.toml`, and can also be run in CI.
 
 `uv sync` includes the development group by default. For a worker-only environment,
-use `uv sync --locked --no-dev` and `uv run --locked --no-dev python worker_depth.py`.
+use `uv sync --locked --no-dev` and `uv run --locked --no-dev python -m src.depth`.
 Some native dependencies may need a source build if a Python 3.15 wheel is not
 available for your platform. Install the
 Tesseract executable and English language data through your system package
@@ -55,10 +55,10 @@ No network requests or model downloads occur during extraction.
 Heavy imaging and Redis imports use Python 3.15's explicit `lazy import` syntax.
 They load on first use, so importing pipeline modules or showing worker/validator
 CLI help does not load NumPy, Pillow, tifffile, Zarr, imagecodecs, or redis-py.
-Library internals retain their normal import behavior. `worker.py` is unchanged.
+Library internals retain their normal import behavior.
 
 ```python
-from models import DepthExtractor
+from src.depth import DepthExtractor
 
 extractor = DepthExtractor()
 extractor.reset()  # required at the start of EVERY document
@@ -86,7 +86,7 @@ interpolation of these observations belong to the merger.
 ## OCR replacement and failures
 
 ```python
-from depth_extraction import OCRToken, TesseractOCR
+from src.depth import OCRToken, TesseractOCR
 
 class AlternativeOCR:
     def recognize(self, rgb_image):
@@ -136,31 +136,58 @@ returns an empty map and advances normally. A replacement backend should raise
   geological correctness. Fewer emitted anchors indicate missing evidence, not
   permission to fill unsupported depths.
 
-**Legacy integration still required:** `worker.py` is unchanged. It reuses its extractor
-across documents without calling `reset()`, and `calculate_depth` remains a stub.
-Callers must add the document reset and implement downstream interpolation before
-using that worker for complete multi-document depth results. Without reset, state
-from separate logs can mix; the extractor cannot infer document boundaries.
+## Depth module layout
+
+Depth functionality lives in `src.depth`: `extraction` provides OCR and the
+offline streaming API, `worker` owns task parsing, TIFF crops and Redis consumption,
+`staging` publishes results atomically, and
+`validation` retains dataset checks. Public types can be imported from `src.depth`.
+
+Run `python -m src.depth` for the worker or `python -m src.depth.validation` for
+offline validation. `python -m src.worker_depth` is the thin entry point used by
+Compose, matching `src.worker_lithology`.
+
+The unused root `worker.py` and `models.py` scaffolds have been removed: their
+monolithic flow combined the depth and lithology stages, used dummy lithology
+results, and had an unimplemented interpolation method. Global depth interpolation
+and final interval assembly belong to the merger in the system diagram. The
+ordered extraction/calibration API remains available for offline validation; the
+Redis worker stages independent observations without invoking it.
 
 ## Redis depth worker
 
-`worker_depth.py` consumes tasks from Redis Stream `stream:depth_tasks` using
-consumer group `depth-workers`. `redis_stub.py` supplies an in-memory client for
-now; it makes no network connections. Replace it by injecting the forthcoming
-Redis client, with redis-py-compatible `xgroup_create`, `xreadgroup`, `sismember`,
-`eval`, and `xack` methods:
+`src/depth/worker.py` consumes tasks from Redis Stream `stream:depth_tasks` using
+consumer group `group:depth_workers`, using the supplied `PipelineRedisClient`.
+The worker has no command-line options or in-memory Redis fallback. It runs
+continuously and consumes tasks dispatched to Redis. Configure it with:
+
+| Variable | Default |
+| --- | --- |
+| `REDIS_HOST` | `172.28.0.2` |
+| `REDIS_PORT` | `6379` |
+| `REDIS_DB` | `0` |
+| `CONSUMER_NAME` | `DepthWorker` |
+
+Use a stable, distinct `CONSUMER_NAME` for each worker instance. For a local run:
+
+```bash
+REDIS_HOST=localhost REDIS_PORT=6379 CONSUMER_NAME=depth-worker-1 uv run --locked python -m src.depth
+```
+
+For programmatic use, pass the actual wrapper:
 
 ```python
-from worker_depth import DepthWorker
+from src.depth import DepthWorker
+from src.redis_client import PipelineRedisClient
 
-DepthWorker(redis_client, consumer_name="depth-worker-1").run_forever()
+DepthWorker(PipelineRedisClient(), consumer_name="depth-worker-1").run_forever()
 ```
 
 The worker creates its consumer group at `0-0` to include existing tasks. Stream
 entries normally carry one `data` field containing the JSON task:
 
 ```python
-redis_client.xadd("stream:depth_tasks", {"data": json.dumps({
+PipelineRedisClient().r.xadd("stream:depth_tasks", {"data": json.dumps({
     "log_id": "0000000009",
     "image_path": "/data/images/0000000009_d-582_0000020435-0001_log01_fe_1in_md.tif",
     "bbox": [1271, 4392, 1407, 92668],
@@ -200,14 +227,20 @@ interleaved logs, reversed order, and process restarts produce independent task
 results. The legacy `extract()` method retains its ordered-stream behavior for
 other callers; broker workers use only `extract_observations()`.
 
-The Lua operation in `depth_staging.py` publishes depth hash entries, executes
-`HINCRBY log:<id>:meta completed_depth 1`, and records a completion marker in
+The Lua operation in `src/depth/staging.py` publishes depth hash entries, executes
+`HINCRBY log:<id>:meta completed_depth_chunks 1`, synchronizes the compatibility
+field `completed_depth`, and records a completion marker in
 Set `log:<id>:depth_completed_tasks` as one atomic Redis operation. Other metadata
 fields are preserved. The marker is a SHA-256 fingerprint of the log ID, image
 path, column box, and requested rows, so duplicate dispatches with different
 stream IDs count only once. The worker then calls XACK. Lost commit responses or
 failed acknowledgements can be retried without repeating OCR or incrementing
 completion again. Empty successful tasks follow the same completion protocol.
+The commit also records the slice in `log:<id>:slices:depth:completed`, matching
+dispatcher recovery. The worker calls `PipelineRedisClient.complete_depth_chunk`
+after staging so the provided client acknowledges and evaluates the merge barrier.
+Depth tasks do not contain a lithology column box, so the merge request leaves
+that optional box unset rather than passing the depth column as a lithology box.
 
 The dispatcher must reset the completion-marker set together with depths and
 metadata when starting a fresh run for a reused log ID. Keep those staging keys
@@ -217,27 +250,29 @@ Results and counter updates use the same keys specified by the system design.
 OCR, decoding, and Redis failures leave the task pending. The worker retries its
 own pending messages before new work, backing off one second on errors. Delivery
 is at least once, with deduplicated publication and counting. Claiming abandoned
-consumers' tasks, dead-letter handling, and durable connection configuration
-remain part of the forthcoming broker integration. Use a stable `consumer_name`
+consumers' tasks and dead-letter handling remain governed by the shared Redis
+client and dispatcher. Use a stable `consumer_name`
 when restarting a worker to resume its pending work.
 
-For a local end-to-end run, put a JSON **array** of tasks in a file and run:
+With Docker Compose, the service receives its connection settings from the
+configured environment and starts the same worker entry point:
 
 ```bash
-uv run --locked python worker_depth.py --tasks /tmp/depth-tasks.json
+docker compose up worker-depth
 ```
 
-This seeds and drains the in-memory stub, then prints its hashes as JSON.
-`python worker_depth.py` starts a blocking listener on the stub; it is not
-connected to an external Redis service. The original `worker.py` is unchanged.
+The dispatcher owns task creation. The worker does not load task files, enqueue
+tasks, drain-and-exit, or print final result JSON. It blocks while Redis is idle,
+processes tasks when they arrive, and continues polling after each completion.
+Results remain in Redis and progress is logged to the process output.
 
 ## Tests and dataset validation
 
 ```bash
 uv sync --locked
 uv run --locked pytest -q
-uv run --locked python validate_depth.py --dataset ../dataset --output /tmp/depth-selected.json
-uv run --locked python validate_depth.py --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-all.json
+uv run --locked python -m src.depth.validation --dataset ../dataset --output /tmp/depth-selected.json
+uv run --locked python -m src.depth.validation --dataset ../dataset --all --max-strips 3 --heights 2000 --output /tmp/depth-all.json
 ```
 
 Set `TESSERACT_BIN` for tests, or `--tesseract` for validation, to use a nonstandard
