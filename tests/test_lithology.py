@@ -7,6 +7,7 @@ from PIL import Image
 from src.lithology import (
     LegendPattern,
     LithologyInterval,
+    LithologyTask,
     analyze_lithology,
     annotate_lithology,
     build_legend,
@@ -17,7 +18,10 @@ from src.lithology import (
     find_swatch_boxes,
     interpret_lithology,
     match_labels,
+    merge_intervals,
     read_legend,
+    process_lithology_task,
+    restrict_intervals,
     TextToken,
     write_intervals,
 )
@@ -295,3 +299,91 @@ def test_interpret_lithology_composes_legend_and_track_analysis():
     ]
     assert result.intervals[0].top_y == 1000
     assert result.intervals[-1].bottom_y == 1256
+
+
+def test_merge_intervals_only_combines_matching_classes():
+    intervals = [
+        LithologyInterval(100, 150, "Shale", 0.9, "cluster_0"),
+        LithologyInterval(150, 220, "Shale", 0.8, "cluster_0"),
+        LithologyInterval(220, 260, "Sandstone", 0.7, "cluster_1"),
+    ]
+    merged = merge_intervals(intervals)
+    assert [interval.to_dict() for interval in merged] == [
+        {
+            "top_y": 100, "bottom_y": 220, "lithology": "Shale",
+            "cluster_id": "cluster_0", "confidence": 0.8,
+        },
+        intervals[2].to_dict(),
+    ]
+    with pytest.raises(ValueError, match="conflicting"):
+        merge_intervals([
+            intervals[0],
+            LithologyInterval(140, 200, "Sandstone", 0.9, "cluster_1"),
+        ])
+
+
+def test_restrict_intervals_clips_to_owned_range():
+    result = restrict_intervals([
+        LithologyInterval(80, 120, "Shale", 0.9, "cluster_0"),
+        LithologyInterval(120, 180, "Sandstone", 0.8, "cluster_1"),
+    ], 100, 160)
+    assert [(item.top_y, item.bottom_y) for item in result] == [
+        (100, 120), (120, 160)
+    ]
+
+
+@pytest.mark.parametrize("change", [
+    {"log_id": ""},
+    {"image_path": ""},
+    {"column_bbox": [70, 80, 70, 240]},
+    {"legend_bbox": None},
+    {"y_start": 79},
+    {"y_end": 241},
+    {"y_end": 80},
+])
+def test_lithology_task_validation(tmp_path, change):
+    payload = {
+        "log_id": "0000000009",
+        "image_path": str(tmp_path / "image.tif"),
+        "column_bbox": [70, 80, 110, 240],
+        "legend_bbox": [5, 5, 65, 70],
+        "y_start": 80,
+        "y_end": 240,
+    }
+    payload.update(change)
+    with pytest.raises(ValueError):
+        LithologyTask.from_payload(payload)
+
+
+def test_process_lithology_task_returns_listener_handoff(tmp_path, monkeypatch):
+    image = np.full((300, 130, 3), 255, np.uint8)
+    path = tmp_path / "image.tif"
+    Image.fromarray(image).save(path)
+    payload = {
+        "log_id": "0000000009",
+        "image_path": str(path),
+        "column_bbox": [70, 80, 110, 240],
+        "legend_bbox": [5, 5, 65, 70],
+        "y_start": 80,
+        "y_end": 240,
+    }
+    legend = build_legend({"Shale": pattern("horizontal")})
+    cache = {("0000000009", str(path), (5, 5, 65, 70)): legend}
+    monkeypatch.setattr("src.lithology.task.analyze_lithology", lambda *args, **kwargs: [
+        LithologyInterval(80, 160, "Shale", 0.9, "cluster_0"),
+        LithologyInterval(160, 240, "Shale", 0.8, "cluster_0"),
+    ])
+    result = process_lithology_task(payload, legend_cache=cache)
+    assert result.to_dict() == {
+        "log_id": "0000000009",
+        "y_start": 80,
+        "y_end": 240,
+        "legend": {"cluster_0": "Shale"},
+        "intervals": [{
+            "top_y": 80,
+            "bottom_y": 240,
+            "lithology": "Shale",
+            "cluster_id": "cluster_0",
+            "confidence": 0.8,
+        }],
+    }

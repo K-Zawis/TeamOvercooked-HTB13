@@ -11,7 +11,14 @@ from .legend import (
     match_labels,
     read_legend,
 )
+from .intervals import merge_intervals, restrict_intervals
 from .text import LegendRecognitionError, TesseractTextRecognizer, TextRecognizer
+from .task import (
+    LithologyTask,
+    LithologyTaskResult,
+    process_lithology_task,
+    read_task_images,
+)
 from .types import (
     FeatureWindow,
     LegendPattern,
@@ -26,6 +33,8 @@ __all__ = [
     "FeatureWindow",
     "LegendPattern",
     "LithologyResult",
+    "LithologyTask",
+    "LithologyTaskResult",
     "LithologyInterval",
     "PatternFeatures",
     "TextRecognizer",
@@ -41,7 +50,11 @@ __all__ = [
     "compute_features",
     "find_swatch_boxes",
     "interpret_lithology",
+    "merge_intervals",
     "match_labels",
     "read_legend",
+    "read_task_images",
+    "restrict_intervals",
+    "process_lithology_task",
     "write_intervals",
 ]
