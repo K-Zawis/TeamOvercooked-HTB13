@@ -12,6 +12,9 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      well_log_net:
+        ipv4_address: 172.28.0.2
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -19,20 +22,28 @@ services:
       retries: 5
 
   dispatcher:
+    build:
+      context: .
+      dockerfile: build/dispatcher/Dockerfile
     image: well_log_dispatcher
     container_name: well_log_dispatcher
     ports:
       - "8000:8000"
     environment:
-      - REDIS_HOST=redis
+      - REDIS_HOST=172.28.0.2
       - REDIS_PORT=6379
       - SLICE_HEIGHT=2000
       - BATCH_SIZE=5
       - DATA_DIR=/data
       - OUTPUT_DIR=/output
     volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
       - ./dataset:/data:ro
       - ./output:/output
+    networks:
+      well_log_net:
+        ipv4_address: 172.28.0.10
     healthcheck:
       test:
         [
@@ -48,77 +59,98 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    command: python -m src.dispatcher
 
   # worker-depth:
   #   build:
   #     context: .
-  #     dockerfile: Dockerfile
+  #     dockerfile: build/depth/Dockerfile
+  #   image: well_log_worker_depth
+  #   container_name: well_log_worker_depth
   #   environment:
-  #     - REDIS_HOST=redis
+  #     - REDIS_HOST=172.28.0.2
   #     - REDIS_PORT=6379
   #     - SLICE_HEIGHT=2000
   #     - DATA_DIR=/data
   #   volumes:
+  #     - ./src:/app/src
   #     - ./dataset:/data:ro
+  #   networks:
+  #     well_log_net:
+  #       ipv4_address: 172.28.0.20
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: python -m src.worker_depth
-  #   profiles: ["app"]
 
   # worker-cluster-lithology:
   #   build:
   #     context: .
-  #     dockerfile: Dockerfile
+  #     dockerfile: build/cluster_lithology/Dockerfile
+  #   image: well_log_worker_cluster_lithology
+  #   container_name: well_log_worker_cluster_lithology
   #   environment:
-  #     - REDIS_HOST=redis
+  #     - REDIS_HOST=172.28.0.2
   #     - REDIS_PORT=6379
   #     - SLICE_HEIGHT=2000
   #     - DATA_DIR=/data
   #   volumes:
+  #     - ./src:/app/src
   #     - ./dataset:/data:ro
+  #   networks:
+  #     well_log_net:
+  #       ipv4_address: 172.28.0.30
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: python -m src.worker_lithology
-  #   profiles: ["app"]
 
   # worker-mapping-lithology:
   #   build:
   #     context: .
-  #     dockerfile: Dockerfile
+  #     dockerfile: build/mapping_lithology/Dockerfile
+  #   image: well_log_worker_mapping_lithology
+  #   container_name: well_log_worker_mapping_lithology
   #   environment:
-  #     - REDIS_HOST=redis
+  #     - REDIS_HOST=172.28.0.2
   #     - REDIS_PORT=6379
-  #     - SLICE_HEIGHT=2000
   #     - DATA_DIR=/data
   #   volumes:
+  #     - ./src:/app/src
   #     - ./dataset:/data:ro
+  #   networks:
+  #     well_log_net:
+  #       ipv4_address: 172.28.0.31
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: python -m src.worker_lithology
-  #   profiles: ["app"]
 
   # merger:
   #   build:
   #     context: .
-  #     dockerfile: Dockerfile
+  #     dockerfile: build/merger/Dockerfile
+  #   image: well_log_merger
   #   container_name: well_log_merger
   #   environment:
-  #     - REDIS_HOST=redis
+  #     - REDIS_HOST=172.28.0.2
   #     - REDIS_PORT=6379
   #     - DATA_DIR=/data
   #     - OUTPUT_DIR=/output
   #   volumes:
+  #     - ./src:/app/src
   #     - ./dataset:/data:ro
   #     - ./output:/output
+  #   networks:
+  #     well_log_net:
+  #       ipv4_address: 172.28.0.40
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: uv run --locked --no-dev python -m src.dispatcher
-  #   profiles: ["app"]
+
+networks:
+  well_log_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
 
 volumes:
   redis_data:

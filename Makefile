@@ -1,37 +1,41 @@
 SHELL := /bin/bash
 
 # Image names
-DISPATCHER_IMG := well_log_dispatcher
-WORKER_DEPTH_IMG := well_log_worker_depth
-WORKER_LITH_IMG := well_log_worker_lithology
-MERGER_IMG := well_log_merger
+DISPATCHER_IMG   := well_log_dispatcher
+DEPTH_IMG        := well_log_worker_depth
+CLUSTER_LITH_IMG := well_log_worker_cluster_lithology
+MAPPING_LITH_IMG := well_log_worker_mapping_lithology
+MERGER_IMG       := well_log_merger
 
 # Dockerfile paths
-DOCKERFILE_DIR := build
-DOCKERFILE_DISPATCHER := $(DOCKERFILE_DIR)/Dockerfile.dispatcher
-DOCKERFILE_DEPTH := $(DOCKERFILE_DIR)/Dockerfile.worker_depth
-DOCKERFILE_LITH := $(DOCKERFILE_DIR)/Dockerfile.worker_lithology
-DOCKERFILE_MERGER := $(DOCKERFILE_DIR)/Dockerfile.merger
+DOCKERFILE_DISPATCHER   := build/dispatcher/Dockerfile
+DOCKERFILE_DEPTH        := build/depth/Dockerfile
+DOCKERFILE_CLUSTER_LITH := build/cluster_lithology/Dockerfile
+DOCKERFILE_MAPPING_LITH := build/mapping_lithology/Dockerfile
+DOCKERFILE_MERGER       := build/merger/Dockerfile
 
-.PHONY: all build build-dispatcher build-depth build-lith build-merger up down clean logs status dashboard reset reconcile live batch help
+.PHONY: all build build-dispatcher build-depth build-cluster-lith build-mapping-lith build-merger up down clean logs status dashboard reset live batch
 
-# Default target
 all: build up
 
 ## Build targets
-build: build-dispatcher build-depth build-lith build-merger
+build: build-dispatcher build-depth build-cluster-lith build-mapping-lith build-merger
 
 build-dispatcher:
 	@echo "--> Building $(DISPATCHER_IMG)..."
 	docker build --network=host -t $(DISPATCHER_IMG) -f $(DOCKERFILE_DISPATCHER) ./
 
 build-depth:
-	@echo "--> Building $(WORKER_DEPTH_IMG)..."
-	docker build --network=host -t $(WORKER_DEPTH_IMG) -f $(DOCKERFILE_DEPTH) ./
+	@echo "--> Building $(DEPTH_IMG)..."
+	docker build --network=host -t $(DEPTH_IMG) -f $(DOCKERFILE_DEPTH) ./
 
-build-lith:
-	@echo "--> Building $(WORKER_LITH_IMG)..."
-	docker build --network=host -t $(WORKER_LITH_IMG) -f $(DOCKERFILE_LITH) ./
+build-cluster-lith:
+	@echo "--> Building $(CLUSTER_LITH_IMG)..."
+	docker build --network=host -t $(CLUSTER_LITH_IMG) -f $(DOCKERFILE_CLUSTER_LITH) ./
+
+build-mapping-lith:
+	@echo "--> Building $(MAPPING_LITH_IMG)..."
+	docker build --network=host -t $(MAPPING_LITH_IMG) -f $(DOCKERFILE_MAPPING_LITH) ./
 
 build-merger:
 	@echo "--> Building $(MERGER_IMG)..."
@@ -39,7 +43,7 @@ build-merger:
 
 ## Runtime targets
 up:
-	@echo "--> Launching cluster..."
+	@echo "--> Starting full cluster..."
 	docker compose up -d
 
 down:
@@ -47,44 +51,23 @@ down:
 	docker compose down
 
 clean:
-	@echo "--> Stopping cluster and wiping Redis persistent volumes..."
+	@echo "--> Stopping cluster and wiping persistent volumes..."
 	docker compose down -v
 
 logs:
 	docker compose logs -f
 
-logs-dispatcher:
-	docker logs -f well_log_dispatcher
-
-## Pipeline control helpers
 status:
-	@curl -s http://localhost:8000/status | jq . 2>/dev/null || curl -s http://localhost:8000/status
+	@curl -s http://localhost:8000/status
 
 dashboard:
-	@curl -s http://localhost:8000/api/dashboard | jq . 2>/dev/null || curl -s http://localhost:8000/api/dashboard
-
-reconcile:
-	@curl -s -X POST http://localhost:8000/batch/reconcile | jq . 2>/dev/null || curl -s -X POST http://localhost:8000/batch/reconcile
+	@curl -s http://localhost:8000/api/dashboard
 
 reset:
-	@curl -s -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{"force": true}' | jq . 2>/dev/null || curl -s -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{"force": true}'
+	@curl -s -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{"force": true}'
 
 live:
-	@curl -s -X POST http://localhost:8000/live/start -H "Content-Type: application/json" -d '{}' | jq . 2>/dev/null || curl -s -X POST http://localhost:8000/live/start -H "Content-Type: application/json" -d '{}'
+	@curl -s -X POST http://localhost:8000/live/start -H "Content-Type: application/json" -d '{}'
 
 batch:
-	@curl -s -X POST http://localhost:8000/batch/start -H "Content-Type: application/json" -d '{"batch_size": 5}' | jq . 2>/dev/null || curl -s -X POST http://localhost:8000/batch/start -H "Content-Type: application/json" -d '{"batch_size": 5}'
-
-help:
-	@echo "Available commands:"
-	@echo "  make build             - Build all 4 container images"
-	@echo "  make up                - Start containers via docker compose"
-	@echo "  make down              - Stop all containers"
-	@echo "  make clean             - Stop containers and remove Redis volumes"
-	@echo "  make logs              - Stream logs for all services"
-	@echo "  make status            - Inspect dispatcher orchestrator state"
-	@echo "  make dashboard         - Query queues and per-document progress"
-	@echo "  make live              - Trigger single-log live demo run"
-	@echo "  make batch             - Trigger 5-log chunked batch run"
-	@echo "  make reconcile         - Audit active streams and self-heal stuck barriers"
-	@echo "  make reset             - Flush Redis database and reset orchestrator"
+	@curl -s -X POST http://localhost:8000/batch/start -H "Content-Type: application/json" -d '{"batch_size": 5}'
