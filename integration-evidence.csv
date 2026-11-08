@@ -1,0 +1,65 @@
+category,name,result,detail
+static_or_isolated,compile:src/__init__.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/__init__.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/__main__.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/extraction.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/legacy_ocr.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/staging.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/validation.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/depth/worker.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/dispatcher.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/__init__.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/annotation.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/classifier.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/export.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/features.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/intervals.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/legend.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/pipeline.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/task.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/text.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/lithology/types.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/redis_client.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/worker_depth.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/worker_lithology.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:src/worker_merge.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_atomic_recovery.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_audit_depth.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_depth_legacy_integration.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_depth_pending_recovery.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_end_to_end.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_pipeline_contract.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tests/test_recovery_merge.py,PASS,"""in-memory normalized"""
+static_or_isolated,compile:tools/check_integration.py,PASS,"""in-memory normalized"""
+static_or_isolated,original_bytes:src/dispatcher.py,PASS,"{""expected"": ""83491ab6924f75c01b16ab242f6e0674bcebd1096bb74f40464eae457280e28f"", ""actual"": ""83491ab6924f75c01b16ab242f6e0674bcebd1096bb74f40464eae457280e28f""}"
+static_or_isolated,original_bytes:compose.yaml,PASS,"{""expected"": ""13aaffe33877a06abfc34c87bfea2328640af77453c43dcff66537b20cdb16f4"", ""actual"": ""13aaffe33877a06abfc34c87bfea2328640af77453c43dcff66537b20cdb16f4""}"
+static_or_isolated,startup_invokes_recovery,PASS,"""static AST assertion; not live Redis"""
+static_or_isolated,isolated_startup_recovery:LIVE,PASS,"""interface doubles; no durability claim"""
+static_or_isolated,isolated_startup_recovery:BATCH,PASS,"""interface doubles; no durability claim"""
+static_or_isolated,isolated_startup_recovery:IDLE,PASS,"""interface doubles; no durability claim"""
+static_or_isolated,build_inputs:build/depth/Dockerfile,PASS,[]
+static_or_isolated,build_inputs:build/dispatcher/Dockerfile,PASS,[]
+static_or_isolated,build_inputs:build/lithology/Dockerfile,PASS,[]
+static_or_isolated,build_inputs:build/merger/Dockerfile,PASS,[]
+static_or_isolated,requirements:depth,PASS,"{""required"": [""imagecodecs"", ""numpy"", ""pillow"", ""redis"", ""tifffile"", ""zarr""], ""declared"": [""imagecodecs"", ""numpy"", ""pillow"", ""redis"", ""tifffile"", ""zarr""]}"
+static_or_isolated,requirements:dispatcher,PASS,"{""required"": [""fastapi"", ""pydantic"", ""redis"", ""uvicorn""], ""declared"": [""fastapi"", ""pydantic"", ""redis"", ""uvicorn""]}"
+static_or_isolated,requirements:lithology,PASS,"{""required"": [""numpy"", ""pillow"", ""rasterio"", ""redis""], ""declared"": [""numpy"", ""pillow"", ""rasterio"", ""redis""]}"
+static_or_isolated,requirements:merger,PASS,"{""required"": [""numpy"", ""pillow"", ""rasterio"", ""redis""], ""declared"": [""numpy"", ""pillow"", ""rasterio"", ""redis""]}"
+tests,unittest discovery,PASS,run=73; skipped=10; failures=0; errors=0
+test,test_real_tiff_window_roundtrip (test_pipeline_contract.PipelineContract.test_real_tiff_window_roundtrip),SKIP,rasterio unavailable; compatibility stubs are not TIFF evidence
+test,test_bad_key_type_has_no_partial_write_or_ack (test_atomic_recovery.RealRedisAtomicity.test_bad_key_type_has_no_partial_write_or_ack),SKIP,real Redis not configured; mocks are not Lua execution evidence
+test,test_claim_abandoned_and_retry_pending (test_atomic_recovery.RealRedisAtomicity.test_claim_abandoned_and_retry_pending),SKIP,real Redis not configured; mocks are not Lua execution evidence
+test,test_completed_replay_does_not_regress_state (test_atomic_recovery.RealRedisAtomicity.test_completed_replay_does_not_regress_state),SKIP,real Redis not configured; mocks are not Lua execution evidence
+test,test_lith_last_and_concurrent_replay (test_atomic_recovery.RealRedisAtomicity.test_lith_last_and_concurrent_replay),SKIP,real Redis not configured; mocks are not Lua execution evidence
+test,test_replay_and_depth_last_barrier_and_ack (test_atomic_recovery.RealRedisAtomicity.test_replay_and_depth_last_barrier_and_ack),SKIP,real Redis not configured; mocks are not Lua execution evidence
+test,test_unstaged_depth_and_missing_totals_remain_pending (test_atomic_recovery.RealRedisAtomicity.test_unstaged_depth_and_missing_totals_remain_pending),SKIP,real Redis not configured; mocks are not Lua execution evidence
+test,test_depth_status_membership_and_exact_replay (test_audit_depth.LiveDepthStaging.test_depth_status_membership_and_exact_replay),SKIP,real Redis not configured; static guards are not Lua execution evidence
+test,test_real_tesseract_rendered_scale (test_depth_legacy_integration.Integration.test_real_tesseract_rendered_scale),SKIP,Tesseract executable not installed
+test,test_live_ocr (test_end_to_end.EndToEnd.test_live_ocr),SKIP,Tesseract executable unavailable
+acceptance,docker compose build/up,NOT RUN,Runtime or dataset unavailable
+acceptance,native Python 3.15 run,NOT RUN,Runtime or dataset unavailable
+acceptance,real dataset end-to-end CSV accuracy and completion,NOT RUN,Runtime or dataset unavailable
+acceptance,process crash and AOF recovery,NOT RUN,Runtime or dataset unavailable
+acceptance,live Redis and Lua,NOT RUN,No actual Redis server available; static Lua checks are not execution
+synthetic,supported 50-250,PASS,three anchors; top_depth=1050.000; bottom_depth=1250.000; lithology=Sand
+synthetic,outside support 0-300,PASS,blank depth boundaries; lithology=Sand

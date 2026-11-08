@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import socket
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
@@ -65,7 +66,7 @@ class WellLogMergerWorker:
         self,
         y_to_depth_map: Dict[int, float],
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Filters OCR depth points using 1D RANSAC consensus on physical pitch.
+        """Filters OCR depth points using global three-anchor support.
 
         Eliminates scale track noise (e.g. 0-100 markings) and OCR blunders
         by enforcing consensus with the dominant well log pixel pitch.
@@ -76,81 +77,32 @@ class WellLogMergerWorker:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Monotonically filtered (y_coords, depth_values) arrays.
         """
-        if len(y_to_depth_map) < 2:
-            y_coords = np.array(list(y_to_depth_map.keys()), dtype=np.float64)
-            depth_vals = np.array(list(y_to_depth_map.values()), dtype=np.float64)
-            return y_coords, depth_vals
+        from types import SimpleNamespace
+        from .depth.legacy_ocr import supported_anchors
 
-        sorted_items = sorted(y_to_depth_map.items(), key=lambda item: item[0])
-        raw_y = np.array([float(item[0]) for item in sorted_items], dtype=np.float64)
-        raw_d = np.array([float(item[1]) for item in sorted_items], dtype=np.float64)
-        num_points = len(raw_y)
-
-        # 1. Estimate dominant physical pitch (ft/pixel) via median pairwise slope
-        candidate_slopes: List[float] = []
-        for i in range(num_points):
-            for j in range(i + 1, min(i + 20, num_points)):
-                delta_y = raw_y[j] - raw_y[i]
-                delta_d = raw_d[j] - raw_d[i]
-                if 300 < delta_y < 10000 and delta_d > 0:
-                    slope = delta_d / delta_y
-                    # Standard well log pitch boundaries: 0.05 to 2.0 ft/pixel
-                    if 0.05 <= slope <= 2.0:
-                        candidate_slopes.append(slope)
-
-        if not candidate_slopes:
-            logger.warning(
-                "No consistent depth slope detected; falling back to raw points"
+        sorted_items = sorted(y_to_depth_map.items(), key=lambda item: float(item[0]))
+        raw_y = np.array([float(y) for y, d in sorted_items], dtype=np.float64)
+        raw_d = np.array([float(d) for y, d in sorted_items], dtype=np.float64)
+        if (
+            not np.all(np.isfinite(raw_y))
+            or not np.all(np.isfinite(raw_d))
+            or np.any(np.diff(raw_y) <= 0)
+        ):
+            raise ValueError(
+                "Depth anchors must have finite distinct coordinates and values"
             )
-            return raw_y, raw_d
-
-        median_slope = float(np.median(candidate_slopes))
-        logger.info(
-            "Estimated log pitch: %.4f ft/pixel (%.1f pixels per 100 ft)",
-            median_slope,
-            100.0 / median_slope if median_slope > 0 else 0.0,
-        )
-
-        # 2. 1D RANSAC to identify the intercept with maximum inlier consensus
-        candidate_intercepts = raw_d - median_slope * raw_y
-        best_inlier_mask = np.zeros(num_points, dtype=bool)
-        max_inlier_count = 0
-
-        # Typical well log grid lines are spaced 100 ft apart; 50 ft tolerance prevents grid aliasing
-        tolerance = 50.0
-        for test_intercept in candidate_intercepts:
-            inlier_mask = np.abs(candidate_intercepts - test_intercept) < tolerance
-            inlier_count = int(np.sum(inlier_mask))
-            if inlier_count > max_inlier_count:
-                max_inlier_count = inlier_count
-                best_inlier_mask = inlier_mask
-
-        inlier_y = raw_y[best_inlier_mask]
-        inlier_d = raw_d[best_inlier_mask]
-
-        # 3. Final safety check: enforce strict monotonicity on remaining inliers
-        valid_y: List[float] = []
-        valid_depths: List[float] = []
-        last_accepted_depth = -float("inf")
-
-        sort_indices = np.argsort(inlier_y)
-        for idx in sort_indices:
-            y_val = float(inlier_y[idx])
-            d_val = float(inlier_d[idx])
-            if d_val > last_accepted_depth:
-                valid_y.append(y_val)
-                valid_depths.append(d_val)
-                last_accepted_depth = d_val
-
-        rejected_count = num_points - len(valid_y)
-        logger.info(
-            "Depth consensus filtering: retained %d inliers, rejected %d noise points/outliers",
-            len(valid_y),
-            rejected_count,
-        )
-
-        return np.array(valid_y, dtype=np.float64), np.array(
-            valid_depths, dtype=np.float64
+        if len(raw_y) > 1 and np.any(np.diff(raw_d) <= 0) and np.ptp(raw_y) <= 300:
+            raise ValueError("Nonmonotonic short-span depth anchors")
+        # Apply the legacy support gates once over all independent observations.
+        # Pixel residuals are unit-independent; never assume feet or a pitch range.
+        anchors = [
+            SimpleNamespace(y=float(y), depth=float(d), confidence=1.0, text=str(d))
+            for y, d in zip(raw_y, raw_d)
+        ]
+        accepted = supported_anchors(anchors, 5.0)
+        return (
+            np.array([a.y for a in accepted], dtype=np.float64),
+            np.array([a.depth for a in accepted], dtype=np.float64),
         )
 
     def interpolate_depth_curve(
@@ -159,7 +111,7 @@ class WellLogMergerWorker:
         ref_y: np.ndarray,
         ref_depths: np.ndarray,
     ) -> np.ndarray:
-        """Interpolates and extrapolates pixel Y coordinates to measured depth values.
+        """Interpolate within anchor support; unsupported queries return NaN.
 
         Args:
             y_query (np.ndarray): Array of vertical pixel positions to interpolate.
@@ -169,30 +121,24 @@ class WellLogMergerWorker:
         Returns:
             np.ndarray: Array of interpolated measured depths aligned with y_query.
         """
-        if len(ref_y) == 0:
-            return y_query
+        y_query = np.asarray(y_query, dtype=np.float64)
+        ref_y = np.asarray(ref_y, dtype=np.float64)
+        ref_depths = np.asarray(ref_depths, dtype=np.float64)
+        if (
+            ref_y.ndim != 1
+            or ref_depths.ndim != 1
+            or len(ref_y) != len(ref_depths)
+            or len(ref_y) < 2
+            or not np.all(np.isfinite(ref_y))
+            or not np.all(np.isfinite(ref_depths))
+            or not np.all(np.isfinite(y_query))
+            or np.any(np.diff(ref_y) <= 0)
+            or np.any(np.diff(ref_depths) <= 0)
+        ):
+            raise ValueError("Need two finite strictly increasing depth anchors")
 
-        if len(ref_y) == 1:
-            return ref_depths[0] + (y_query - ref_y[0]) * 0.1
-
-        depths = np.interp(y_query, ref_y, ref_depths)
-
-        dy_top = ref_y[1] - ref_y[0]
-        if dy_top > 0:
-            slope_top = (ref_depths[1] - ref_depths[0]) / dy_top
-            top_mask = y_query < ref_y[0]
-            depths[top_mask] = (
-                ref_depths[0] + (y_query[top_mask] - ref_y[0]) * slope_top
-            )
-
-        dy_bottom = ref_y[-1] - ref_y[-2]
-        if dy_bottom > 0:
-            slope_bottom = (ref_depths[-1] - ref_depths[-2]) / dy_bottom
-            bottom_mask = y_query > ref_y[-1]
-            depths[bottom_mask] = (
-                ref_depths[-1] + (y_query[bottom_mask] - ref_y[-1]) * slope_bottom
-            )
-
+        # No pitch is inferred beyond the observed calibration support.
+        depths = np.interp(y_query, ref_y, ref_depths, left=np.nan, right=np.nan)
         return depths
 
     # -------------------------------------------------------------------------
@@ -217,16 +163,27 @@ class WellLogMergerWorker:
         legend_map = self.client.get_legend_map(log_id)
         intervals: List[LithologyInterval] = []
 
+        seen = set()
         for item in raw_data:
             cluster_id = item.get("cluster_id")
             lithology = item.get("lithology")
             if not lithology and cluster_id:
                 lithology = legend_map.get(cluster_id, "UNKNOWN")
 
+            key = (
+                item["top_y"],
+                item["bottom_y"],
+                lithology,
+                float(item.get("confidence", 0.0)),
+                cluster_id,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
             intervals.append(
                 LithologyInterval(
-                    top_y=int(item["top_y"]),
-                    bottom_y=int(item["bottom_y"]),
+                    top_y=item["top_y"],
+                    bottom_y=item["bottom_y"],
                     lithology=lithology,
                     confidence=float(item.get("confidence", 0.0)),
                     cluster_id=cluster_id,
@@ -256,27 +213,59 @@ class WellLogMergerWorker:
             [y for inv in stitched_intervals for y in (inv.top_y, inv.bottom_y)],
             dtype=np.float64,
         )
-        calculated_depths = self.interpolate_depth_curve(y_coords, ref_y, ref_depths)
+        calculated_depths = (
+            self.interpolate_depth_curve(y_coords, ref_y, ref_depths)
+            if len(ref_y) >= 2
+            else np.full(y_coords.shape, np.nan)
+        )
 
         top_depths = calculated_depths[0::2]
         bottom_depths = calculated_depths[1::2]
 
+        if (
+            not isinstance(log_id, str)
+            or not log_id
+            or Path(log_id).name != log_id
+            or "\\" in log_id
+        ):
+            raise ValueError("log_id must be a filename component")
+        if np.any(np.isinf(calculated_depths)) or np.any(bottom_depths <= top_depths):
+            raise ValueError("Invalid calculated depths")
         export_path = self.output_dir / f"{log_id}.csv"
-        with export_path.open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=self.CSV_FIELDS)
-            writer.writeheader()
-            for i, interval in enumerate(stitched_intervals):
-                writer.writerow(
-                    {
-                        "top_depth": f"{top_depths[i]:.3f}",
-                        "bottom_depth": f"{bottom_depths[i]:.3f}",
-                        "lithology": interval.lithology or "UNKNOWN",
-                        "confidence": f"{interval.confidence:.3f}",
-                        "top_y": interval.top_y,
-                        "bottom_y": interval.bottom_y,
-                        "cluster_id": interval.cluster_id or "",
-                    }
-                )
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                newline="",
+                encoding="utf-8",
+                dir=self.output_dir,
+                delete=False,
+            ) as file:
+                temporary_path = Path(file.name)
+                writer = csv.DictWriter(file, fieldnames=self.CSV_FIELDS)
+                writer.writeheader()
+                for i, interval in enumerate(stitched_intervals):
+                    writer.writerow(
+                        {
+                            "top_depth": f"{top_depths[i]:.3f}"
+                            if np.isfinite(top_depths[i])
+                            else None,
+                            "bottom_depth": f"{bottom_depths[i]:.3f}"
+                            if np.isfinite(bottom_depths[i])
+                            else None,
+                            "lithology": interval.lithology or "UNKNOWN",
+                            "confidence": f"{interval.confidence:.3f}",
+                            "top_y": interval.top_y,
+                            "bottom_y": interval.bottom_y,
+                            "cluster_id": interval.cluster_id or "",
+                        }
+                    )
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary_path, export_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
         return export_path
 
@@ -294,7 +283,12 @@ class WellLogMergerWorker:
         log_id = payload["log_id"]
         logger.info("Starting final reduction merge for log '%s'...", log_id)
 
-        destination = self.export_merged_document(log_id)
+        destination = self.output_dir / f"{log_id}.csv"
+        if (
+            self.client.get_document_status(log_id) != LogStatus.COMPLETED
+            or not destination.is_file()
+        ):
+            destination = self.export_merged_document(log_id)
         logger.info("Successfully exported merged log '%s' to %s", log_id, destination)
 
         self.client.set_document_status(log_id, LogStatus.COMPLETED)
@@ -326,7 +320,8 @@ class WellLogMergerWorker:
                 logger.exception(
                     "Merge task %r for log '%s' failed", message_id, log_id
                 )
-                self.client.set_document_status(log_id, LogStatus.FAILED)
+                # Keep the task pending and its existing status recoverable.
+                # Redelivery/claiming remains the shared broker's responsibility.
 
 
 def main() -> None:

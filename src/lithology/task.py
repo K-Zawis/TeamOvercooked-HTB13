@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import MutableMapping
 import warnings
+import os
+import math
 
 lazy import numpy as np
 lazy import rasterio
@@ -170,11 +172,31 @@ def read_task_images(
                     raise ValueError("task bounding box extends outside the image")
             column = _read_rgb_window(dataset, column_box)
             legend = (
-                _read_rgb_window(dataset, task.legend_bbox)
-                if include_legend
-                else None
+                _read_rgb_window(dataset, task.legend_bbox) if include_legend else None
             )
     return column, legend
+
+
+def owned_task_range(task: LithologyTask) -> tuple[int, int]:
+    """Later slices own overlap, matching LogDispatcher._generate_slices.
+
+    Classification still sees the full strip for context. Only publication is
+    clipped. Task bounds remain unchanged for Redis completion/recovery keys.
+    Reject mismatched geometry instead of guessing at ownership.
+    """
+    height = int(os.getenv("SLICE_HEIGHT", "2000"))
+    overlap = float(os.getenv("SLICE_OVERLAP_RATIO", "0.10"))
+    if height <= 0 or not math.isfinite(overlap) or not 0 <= overlap < 1:
+        raise ValueError("invalid slice configuration")
+    step = max(1, height - int(height * overlap))
+    top, bottom = task.column_bbox[1], task.column_bbox[3]
+    for start in range(top, bottom, step):
+        end = min(start + height, bottom)
+        if start == task.y_start and end == task.y_end:
+            return start, end if end == bottom else start + step
+        if end == bottom:
+            break
+    raise ValueError("task bounds do not match dispatcher slice configuration")
 
 
 def process_lithology_task(
@@ -214,9 +236,8 @@ def process_lithology_task(
         transition_penalty=transition_penalty,
         unknown_distance=unknown_distance,
     )
-    intervals = merge_intervals(
-        restrict_intervals(intervals, task.y_start, task.y_end)
-    )
+    owned_start, owned_end = owned_task_range(task)
+    intervals = merge_intervals(restrict_intervals(intervals, owned_start, owned_end))
 
     return LithologyTaskResult(
         log_id=task.log_id,

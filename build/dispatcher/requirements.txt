@@ -1,4 +1,4 @@
-redis 
-fastapi 
-pydantic 
-uvicorn[standard]
+redis>=5
+fastapi>=0.115
+pydantic>=2.10
+uvicorn>=0.34

@@ -1,0 +1,135 @@
+{
+  "source_sha256": "8143659e0afdb670d50ba27faebbf9cd8d057cc0bd863a2eb5d7727dec51f8ea",
+  "entries": [
+    {
+      "id": "r0",
+      "label": "Limestone",
+      "image": "legend.png",
+      "box": [
+        88,
+        135,
+        228,
+        225
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r1",
+      "label": "Dolomite",
+      "image": "legend.png",
+      "box": [
+        340,
+        135,
+        480,
+        225
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r2",
+      "label": "Anhydrite",
+      "image": "legend.png",
+      "box": [
+        593,
+        135,
+        733,
+        225
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r3",
+      "label": "Halite",
+      "image": "legend.png",
+      "box": [
+        844,
+        135,
+        984,
+        225
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r4",
+      "label": "Coal",
+      "image": "legend.png",
+      "box": [
+        88,
+        365,
+        228,
+        455
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r5",
+      "label": "Clay",
+      "image": "legend.png",
+      "box": [
+        340,
+        365,
+        480,
+        455
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r6",
+      "label": "Shale",
+      "image": "legend.png",
+      "box": [
+        593,
+        365,
+        733,
+        455
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r7",
+      "label": "Siltstone",
+      "image": "legend.png",
+      "box": [
+        844,
+        365,
+        984,
+        455
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r8",
+      "label": "Silty Sandstone",
+      "image": "legend.png",
+      "box": [
+        88,
+        635,
+        228,
+        725
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "r9",
+      "label": "Sand and Sandstone",
+      "image": "legend.png",
+      "box": [
+        340,
+        635,
+        480,
+        725
+      ],
+      "kind": "lithology",
+      "verified": true
+    }
+  ]
+}

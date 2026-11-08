@@ -130,8 +130,11 @@ def _open_depth_image(task: DepthTask):
 def _read_rgb_window(page, image, left, right, y_start, y_end) -> np.ndarray:
     """Decode and normalize only the selected window, sharing format handling."""
     selection = tuple(
-        slice(y_start, y_end) if axis == "Y" else
-        slice(left, right) if axis == "X" else slice(None)
+        slice(y_start, y_end)
+        if axis == "Y"
+        else slice(left, right)
+        if axis == "X"
+        else slice(None)
         for axis in page.axes
     )
     pixels = np.asarray(image[selection])
@@ -172,14 +175,23 @@ def _read_rgb_window(page, image, left, right, y_start, y_end) -> np.ndarray:
 def read_depth_strip(task: DepthTask) -> np.ndarray:
     """Decode exactly the requested first-page TIFF ROI as one RGB array."""
     with _open_depth_image(task) as (page, image):
-        return _read_rgb_window(page, image, task.bbox[0], task.bbox[2],
-                                task.y_start, task.y_end)
+        return _read_rgb_window(
+            page, image, task.bbox[0], task.bbox[2], task.y_start, task.y_end
+        )
 
 
 def _validate_strip_options(strip_height, context_rows):
-    if isinstance(strip_height, bool) or not isinstance(strip_height, int) or strip_height <= 0:
+    if (
+        isinstance(strip_height, bool)
+        or not isinstance(strip_height, int)
+        or strip_height <= 0
+    ):
         raise ValueError("strip_height must be a positive integer")
-    if isinstance(context_rows, bool) or not isinstance(context_rows, int) or context_rows < 0:
+    if (
+        isinstance(context_rows, bool)
+        or not isinstance(context_rows, int)
+        or context_rows < 0
+    ):
         raise ValueError("context_rows must be a nonnegative integer")
 
 
@@ -197,7 +209,9 @@ def iter_depth_strips(task: DepthTask, strip_height=2000, context_rows=128):
             end = min(start + strip_height, task.y_end)
             top = max(task.bbox[1], start - context_rows)
             bottom = min(task.bbox[3], end + context_rows)
-            pixels = _read_rgb_window(page, image, task.bbox[0], task.bbox[2], top, bottom)
+            pixels = _read_rgb_window(
+                page, image, task.bbox[0], task.bbox[2], top, bottom
+            )
             try:
                 yield DepthStrip(pixels, top, start, end)
             finally:
@@ -238,10 +252,14 @@ class DepthWorker:
         if self.redis.sismember(staging_keys(task.log_id)[2], task.task_id):
             return {}
         global_map = {}
-        with closing(iter_depth_strips(task, self.strip_height, self.context_rows)) as strips:
+        with closing(
+            iter_depth_strips(task, self.strip_height, self.context_rows)
+        ) as strips:
             for strip in strips:
                 try:
-                    local = self.extractor.extract_observations(strip.pixels)["y_to_depth_map"]
+                    local = self.extractor.extract_observations(strip.pixels)[
+                        "y_to_depth_map"
+                    ]
                     if any(
                         isinstance(y, bool)
                         or not isinstance(y, (int, np.integer))
@@ -249,11 +267,16 @@ class DepthWorker:
                         or not math.isfinite(depth)
                         for y, depth in local.items()
                     ):
-                        raise ValueError("extractor produced an invalid depth observation")
-                    global_map.update({
-                        strip.y_offset + int(y): depth for y, depth in local.items()
-                        if strip.y_start <= strip.y_offset + y < strip.y_end
-                    })
+                        raise ValueError(
+                            "extractor produced an invalid depth observation"
+                        )
+                    global_map.update(
+                        {
+                            strip.y_offset + int(y): depth
+                            for y, depth in local.items()
+                            if strip.y_start <= strip.y_offset + y < strip.y_end
+                        }
+                    )
                 finally:
                     del strip
         committed = commit_depth_result(
@@ -266,11 +289,28 @@ class DepthWorker:
         return global_map if committed else {}
 
     def run_once(self, *, block_ms=1000) -> bool:
-        """Retry own pending work before reading one new task. Raise on failures."""
+        """Retry own pending, reclaim abandoned work, then read new. Raise on failures."""
         entries = self.redis.xreadgroup(
-            self.group, self.consumer_name, {TASK_STREAM: "0"}, count=1
+            self.group,
+            self.consumer_name,
+            {TASK_STREAM: getattr(self, "_pending_cursor", "0")},
+            count=1,
         )
         messages = [entry for _, rows in (entries or []) for entry in rows]
+        if not messages:
+            self._pending_cursor = "0"
+            # Scan at most one bounded XAUTOCLAIM page per poll, retaining its
+            # cursor so a large PEL cannot starve abandoned tasks behind page 1.
+            claimed = self.redis.xautoclaim(
+                TASK_STREAM,
+                self.group,
+                self.consumer_name,
+                min_idle_time=300000,
+                start_id=getattr(self, "_claim_cursor", "0-0"),
+                count=1,
+            )
+            self._claim_cursor = claimed[0]
+            messages = claimed[1]
         if not messages:
             entries = self.redis.xreadgroup(
                 self.group,
@@ -283,6 +323,7 @@ class DepthWorker:
         if not messages:
             return False
         message_id, fields = messages[0]
+        self._pending_cursor = message_id
         try:
             task = DepthTask.from_fields(fields)
             result = self.process_task(task)
@@ -319,7 +360,9 @@ class DepthWorker:
                     if self.run_once():
                         idle = False
                     elif not idle:
-                        logger.info("No depth tasks available; waiting for the next batch.")
+                        logger.info(
+                            "No depth tasks available; waiting for the next batch."
+                        )
                         idle = True
                 except Exception:
                     # Failed/poison messages stay pending. Back off; recovery and

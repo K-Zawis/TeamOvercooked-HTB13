@@ -437,83 +437,71 @@ class PipelineRedisClient:
     # TASK CONSUMER STREAMS (Workers & Merger)
     # -------------------------------------------------------------------------
 
-    def listen_tasks(
-        self,
-        stream: str,
-        group: str,
-        consumer_name: str,
-        block_ms: int = 2000,
-    ) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
-        """Streams unacknowledged tasks from a consumer group continuously as a generator.
+    def _read_recoverable(self, stream, group, consumer_name, block_ms):
+        """Drain this consumer's startup PEL, then reclaim idle work fairly.
 
-        Args:
-            stream (str): Name of the stream to consume from.
-            group (str): Consumer group assigned to the stream.
-            consumer_name (str): Unique identifier for the calling worker instance.
-            block_ms (int, optional): Blocking timeout in milliseconds per tick. Defaults to 2000.
-
-        Yields:
-            Tuple[str, Dict[str, Any]]: Tuple of (message_id, parsed_payload_dict) on task arrival.
+        XAUTOCLAIM also retries this consumer's failed entries after the idle
+        timeout. It scans other consumers even while new tasks keep arriving.
+        Requires Redis >= 6.2; unsupported brokers fail visibly, not silently.
         """
+        if not hasattr(self, "_pending_cursors"):
+            self._pending_cursors = {}
+            self._claim_cursors = {}
+        identity = (stream, group, consumer_name)
+        cursor = self._pending_cursors.get(identity, "0-0")
+        if cursor is not None:
+            response = self.r.xreadgroup(
+                group, consumer_name, {stream: cursor}, count=1
+            )
+            rows = [entry for _, entries in (response or []) for entry in entries]
+            if rows:
+                self._pending_cursors[identity] = rows[-1][0]
+                return rows[0]
+            self._pending_cursors[identity] = None
+        idle_ms = max(1, int(os.getenv("TASK_CLAIM_IDLE_MS", "300000")))
+        claimed = self.r.xautoclaim(
+            stream,
+            group,
+            consumer_name,
+            min_idle_time=idle_ms,
+            start_id=self._claim_cursors.get(identity, "0-0"),
+            count=1,
+        )
+        # Redis 6.2 returns two items; Redis 7 adds deleted PEL IDs.
+        self._claim_cursors[identity] = claimed[0]
+        if claimed[1]:
+            return claimed[1][0]
+        response = self.r.xreadgroup(
+            group, consumer_name, {stream: ">"}, count=1, block=max(1, block_ms)
+        )
+        rows = [entry for _, entries in (response or []) for entry in entries]
+        return rows[0] if rows else None
+
+    def listen_tasks(self, stream, group, consumer_name, block_ms=2000):
+        """Recover pending tasks and consume new work without acknowledging failures."""
         while True:
             try:
-                messages = self.r.xreadgroup(
-                    groupname=group,
-                    consumername=consumer_name,
-                    streams={stream: ">"},
-                    count=1,
-                    block=block_ms,
-                )
+                task = self.read_task(stream, group, consumer_name, block_ms)
             except redis.exceptions.ResponseError as exc:
-                if "NOGROUP" in str(exc):
-                    # Auto-recreate stream & group if Redis was flushed or stream was wiped
-                    self.init_consumer_groups()
-                    continue
-                raise
-
-            if not messages:
+                if "NOGROUP" not in str(exc):
+                    raise
+                self.init_consumer_groups()
+                self._pending_cursors = {}
+                self._claim_cursors = {}
                 continue
+            if task is not None:
+                yield task
 
-            for _, entries in messages:
-                for msg_id, fields in entries:
-                    payload = json.loads(fields["data"])
-                    yield msg_id, payload
-
-    def read_task(
-        self,
-        stream: str,
-        group: str,
-        consumer_name: str,
-        block_ms: int = 2000,
-    ) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Reads a single unacknowledged task on demand without streaming.
-
-        Args:
-            stream (str): Name of the stream to read from.
-            group (str): Consumer group assigned to the stream.
-            consumer_name (str): Unique identifier for the calling worker instance.
-            block_ms (int, optional): Blocking timeout in milliseconds. Defaults to 2000.
-
-        Returns:
-            Optional[Tuple[str, Dict[str, Any]]]: Tuple of (message_id, parsed_payload_dict), or None if queue is empty.
-        """
-        messages = self.r.xreadgroup(
-            groupname=group,
-            consumername=consumer_name,
-            streams={stream: ">"},
-            count=1,
-            block=block_ms,
-        )
-        if not messages:
+    def read_task(self, stream, group, consumer_name, block_ms=2000):
+        task = self._read_recoverable(stream, group, consumer_name, block_ms)
+        if task is None:
             return None
-
-        _, stream_messages = messages[0]
-        if not stream_messages:
+        message_id, fields = task
+        # Deleted stream entries can remain in an old consumer's PEL.
+        if not fields:
+            self.ack_task(stream, group, message_id)
             return None
-
-        msg_id, fields = stream_messages[0]
-        payload = json.loads(fields["data"])
-        return msg_id, payload
+        return message_id, json.loads(fields["data"])
 
     def ack_task(self, stream: str, group: str, msg_id: str) -> None:
         """Confirms successful task processing to clear the message from the Pending Entries List (PEL).
@@ -875,106 +863,196 @@ class PipelineRedisClient:
     # ATOMIC COMPLETION & BARRIER TRIGGER
     # -------------------------------------------------------------------------
 
-    def complete_depth_chunk(
+    # All result publication, completion, barrier transition and ACK commands
+    # run in one Redis script. Lua runtime errors do NOT roll writes back, so
+    # key types, metadata, payloads and consumer group are checked first.
+    COMPLETE_CHUNK_LUA = r"""
+local expected = {'hash','set','set','list','hash','stream','stream','stream'}
+for i, kind in ipairs(expected) do
+    local actual = redis.call('TYPE', KEYS[i]).ok
+    if actual ~= 'none' and actual ~= kind then
+        return redis.error_reply('invalid completion key type at ' .. i)
+    end
+end
+local function count(field)
+    local raw = redis.call('HGET', KEYS[1], field)
+    if not raw or not string.match(raw, '^%d+$') then return nil end
+    local n = tonumber(raw)
+    if not n or n > 9007199254740991 then return nil end
+    return n
+end
+local dt = count('total_depth_chunks')
+local lt = count('total_lith_chunks')
+if not dt or not lt then return redis.error_reply('missing or invalid chunk totals') end
+local mode = ARGV[1]
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'PROCESSING' and status ~= 'MERGING' and status ~= 'COMPLETED' then
+    return redis.error_reply('log is not active')
+end
+local rows = cjson.decode(ARGV[5])
+local legend = cjson.decode(ARGV[6])
+if mode ~= 'barrier' then
+    local groups = redis.call('XINFO', 'GROUPS', KEYS[6])
+    local found = false
+    for _, group in ipairs(groups) do
+        for i = 1, #group, 2 do
+            if group[i] == 'name' and group[i+1] == ARGV[3] then found = true end
+        end
+    end
+    if not found then return redis.error_reply('NOGROUP completion group missing') end
+end
+-- Decode stored JSON before any writes: scripts cannot roll back errors.
+local merge_payload = cjson.decode(ARGV[7])
+local stored_bbox = redis.call('HGET', KEYS[1], 'lith_column_bbox')
+if stored_bbox then merge_payload.column_bbox = cjson.decode(stored_bbox) end
+if mode == 'depth' and redis.call('SISMEMBER', KEYS[2], ARGV[2]) == 0 then
+    return redis.error_reply('depth result must be staged before completion')
+end
+local donekey = mode == 'depth' and KEYS[2] or KEYS[3]
+local fresh = mode ~= 'barrier' and redis.call('SISMEMBER', donekey, ARGV[2]) == 0
+if fresh and status ~= 'PROCESSING' then
+    return redis.error_reply('new slice after merge started')
+end
+if fresh then
+    if mode == 'lith' then
+        for _, row in ipairs(rows) do redis.call('RPUSH', KEYS[4], row) end
+        for cluster, label in pairs(legend) do redis.call('HSET', KEYS[5], cluster, label) end
+    end
+    redis.call('SADD', donekey, ARGV[2])
+end
+if mode == 'lith' and ARGV[8] ~= 'null' then
+    redis.call('HSET', KEYS[1], 'lith_column_bbox', ARGV[8])
+end
+local dd = redis.call('SCARD', KEYS[2])
+local ld = redis.call('SCARD', KEYS[3])
+redis.call('HSET', KEYS[1], 'completed_depth_chunks', dd,
+           'completed_depth', dd, 'completed_lith_chunks', ld)
+local triggered = 0
+if dd >= dt and ld >= lt and status == 'PROCESSING' then
+    if mode == 'lith' and ARGV[8] ~= 'null' then
+        merge_payload.column_bbox = cjson.decode(ARGV[8])
+    end
+    redis.call('XADD', KEYS[7], '*', 'data', cjson.encode(merge_payload))
+    redis.call('HSET', KEYS[1], 'status', 'MERGING')
+    redis.call('XADD', KEYS[8], '*', 'data', ARGV[9])
+    triggered = 1
+end
+if mode ~= 'barrier' then redis.call('XACK', KEYS[6], ARGV[3], ARGV[4]) end
+return triggered
+"""
+
+    def _complete_atomic(
         self,
-        log_id: str,
-        msg_id: str,
-        image_path: str | Path,
-        column_bbox: List[int],
-        slice_bounds: Optional[Tuple[int, int]] = None,
-    ) -> bool:
-        """Acknowledges a depth task, records slice completion idempotently, and triggers merge if all chunks finished.
+        mode,
+        log_id,
+        msg_id,
+        image_path,
+        column_bbox,
+        slice_bounds,
+        intervals=(),
+        legend=None,
+    ):
+        import re
 
-        Args:
-            log_id (str): Target well log identifier.
-            msg_id (str): Redis message identifier to acknowledge.
-            image_path (str | Path): Path to the source TIFF image.
-            column_bbox (List[int]): Lithology bounding box required for final merging visualization.
-            slice_bounds (Optional[Tuple[int, int]], optional): Coordinate bounds (y_start, y_end) of the slice. Defaults to None.
+        if mode != "barrier" and not re.fullmatch(r"[0-9]+-[0-9]+", msg_id):
+            raise ValueError("invalid stream message ID")
+        token = (
+            f"{slice_bounds[0]}:{slice_bounds[1]}"
+            if slice_bounds is not None
+            else f"message:{msg_id}"
+        )
+        if not isinstance(legend or {}, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in (legend or {}).items()
+        ):
+            raise ValueError("legend must map strings to strings")
+        if not isinstance(intervals, (list, tuple)) or any(
+            not isinstance(row, dict) for row in intervals
+        ):
+            raise ValueError("intervals must be a sequence of objects")
+        prefix = f"log:{log_id}"
+        stream, group = (
+            (self.STREAM_DEPTH, self.GROUP_DEPTH)
+            if mode == "depth"
+            else (self.STREAM_LITH, self.GROUP_LITH)
+        )
+        keys = [
+            f"{prefix}:meta",
+            f"{prefix}:slices:depth:completed",
+            f"{prefix}:slices:lith:completed",
+            f"{prefix}:raw_intervals",
+            f"{prefix}:legend",
+            stream,
+            self.STREAM_MERGE,
+            self.STREAM_EVENTS,
+        ]
+        encode = lambda value: json.dumps(value, allow_nan=False)
+        return bool(
+            self.r.eval(
+                self.COMPLETE_CHUNK_LUA,
+                len(keys),
+                *keys,
+                mode,
+                token,
+                group,
+                msg_id,
+                encode([encode(row) for row in intervals]),
+                encode(legend or {}),
+                encode(
+                    dict(
+                        log_id=log_id,
+                        image_path=str(image_path),
+                        column_bbox=column_bbox,
+                    )
+                ),
+                encode(column_bbox),
+                encode(dict(log_id=log_id, status="MERGING")),
+            )
+        )
 
-        Returns:
-            bool: True if this chunk completed the barrier and triggered the merge step, False otherwise.
+    def complete_depth_chunk(
+        self, log_id, msg_id, image_path, column_bbox, slice_bounds=None
+    ):
+        """Barrier and ACK after depth staging has durably published its results.
+
+        Depth staging already owns result/counter/slice commit. Re-adding that
+        slice here is idempotent; both depth counter aliases stay in sync.
         """
-        self.ack_task(self.STREAM_DEPTH, self.GROUP_DEPTH, msg_id)
-
-        if slice_bounds:
-            token = f"{slice_bounds[0]}:{slice_bounds[1]}"
-            self.r.sadd(f"log:{log_id}:slices:depth:completed", token)
-            completed = self.r.scard(f"log:{log_id}:slices:depth:completed")
-            self.r.hset(f"log:{log_id}:meta", "completed_depth_chunks", completed)
-        else:
-            self.r.hincrby(f"log:{log_id}:meta", "completed_depth_chunks", 1)
-
-        return self._check_and_trigger_merge(log_id, image_path, column_bbox)
+        return self._complete_atomic(
+            "depth", log_id, msg_id, image_path, column_bbox, slice_bounds
+        )
 
     def complete_lith_chunk(
         self,
-        log_id: str,
-        msg_id: str,
-        image_path: str | Path,
-        column_bbox: List[int],
-        slice_bounds: Optional[Tuple[int, int]] = None,
-    ) -> bool:
-        """Acknowledges a lithology task, records slice completion idempotently, and triggers merge if all chunks finished.
+        log_id,
+        msg_id,
+        image_path,
+        column_bbox,
+        slice_bounds=None,
+        *,
+        intervals=None,
+        legend=None,
+    ):
+        """Publish rows, legend, slice marker, merge barrier and ACK atomically."""
+        if intervals is None or slice_bounds is None:
+            raise ValueError(
+                "atomic lith publication requires intervals and slice_bounds"
+            )
+        return self._complete_atomic(
+            "lith",
+            log_id,
+            msg_id,
+            image_path,
+            column_bbox,
+            slice_bounds,
+            intervals,
+            legend,
+        )
 
-        Args:
-            log_id (str): Target well log identifier.
-            msg_id (str): Redis message identifier to acknowledge.
-            image_path (str | Path): Path to the source TIFF image.
-            column_bbox (List[int]): Lithology bounding box required for final merging visualization.
-            slice_bounds (Optional[Tuple[int, int]], optional): Coordinate bounds (y_start, y_end) of the slice. Defaults to None.
-
-        Returns:
-            bool: True if this chunk completed the barrier and triggered the merge step, False otherwise.
-        """
-        self.ack_task(self.STREAM_LITH, self.GROUP_LITH, msg_id)
-
-        if slice_bounds:
-            token = f"{slice_bounds[0]}:{slice_bounds[1]}"
-            self.r.sadd(f"log:{log_id}:slices:lith:completed", token)
-            completed = self.r.scard(f"log:{log_id}:slices:lith:completed")
-            self.r.hset(f"log:{log_id}:meta", "completed_lith_chunks", completed)
-        else:
-            self.r.hincrby(f"log:{log_id}:meta", "completed_lith_chunks", 1)
-
-        return self._check_and_trigger_merge(log_id, image_path, column_bbox)
-
-    def _check_and_trigger_merge(
-        self,
-        log_id: str,
-        image_path: str | Path,
-        column_bbox: List[int],
-    ) -> bool:
-        """Atomically checks if all chunks are done across both disciplines and triggers merge.
-
-        Args:
-            log_id (str): Target well log identifier.
-            image_path (str | Path): Path to the source TIFF image.
-            column_bbox (List[int]): Lithology bounding box required for final merging visualization.
-
-        Returns:
-            bool: True if this call triggered the merge task, False otherwise.
-        """
-        meta = self.r.hgetall(f"log:{log_id}:meta")
-        if not meta:
-            return False
-
-        depth_done = int(meta.get("completed_depth_chunks", 0))
-        depth_total = int(meta.get("total_depth_chunks", -1))
-        lith_done = int(meta.get("completed_lith_chunks", 0))
-        lith_total = int(meta.get("total_lith_chunks", -2))
-
-        if depth_done >= depth_total and lith_done >= lith_total:
-            current_status = meta.get("status")
-            if current_status == LogStatus.PROCESSING.value:
-                self.set_document_status(log_id, LogStatus.MERGING)
-                self.push_merge_task(
-                    log_id=log_id,
-                    image_path=str(image_path),
-                    column_bbox=column_bbox,
-                )
-                return True
-        return False
+    def _check_and_trigger_merge(self, log_id, image_path, column_bbox):
+        return self._complete_atomic(
+            "barrier", log_id, "", image_path, column_bbox, None
+        )
 
     def is_log_finished(self, log_id: str) -> bool:
         """Checks if a log has finished all chunk processing stages.

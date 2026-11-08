@@ -1,11 +1,6 @@
-numpy
-redis
-tiffile
-zarr
-pillow
-imagecodecs
-donfig
-google-crc32c
-msgspec
-numcodecs
-typing-extensions
+numpy>=1.24
+redis>=5
+tifffile
+zarr>=3
+Pillow>=10.1
+imagecodecs>=2024.12.30

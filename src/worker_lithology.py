@@ -47,18 +47,14 @@ def handle_task(
     )
     serialized = result.to_dict()
 
-    if serialized.get("legend"):
-        client.save_legend_map(result.log_id, serialized["legend"])
-
-    client.append_raw_intervals(result.log_id, serialized["intervals"])
-
-    # Pass slice_bounds to ensure idempotent slice tracking in Redis sets
     client.complete_lith_chunk(
         log_id=result.log_id,
         msg_id=message_id,
         image_path=task.image_path,
         column_bbox=list(task.column_bbox),
         slice_bounds=(result.y_start, result.y_end),
+        intervals=serialized["intervals"],
+        legend=serialized["legend"],
     )
     return result
 

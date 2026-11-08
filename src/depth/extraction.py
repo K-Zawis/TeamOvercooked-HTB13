@@ -43,88 +43,44 @@ class TesseractOCR:
         self.executable, self.timeout, self.scale = executable, timeout, scale
 
     def recognize(self, image: np.ndarray) -> list[OCRToken]:
-        gray = np.array(ImageOps.autocontrast(Image.fromarray(image).convert("L")))
-        # Remove continuous frame lines, not short ticks or individual glyphs.
-        ink = gray < 128
-        vertical = ink.mean(axis=0) > 0.9
-        horizontal = ink.mean(axis=1) > 0.95
-        if gray.shape[0] >= 80:
-            gray[:, vertical] = 255
-            for x in np.flatnonzero(vertical):
-                if x < min(12, gray.shape[1] // 4):
-                    gray[:, : x + 7] = 255
-                elif x >= gray.shape[1] - min(12, gray.shape[1] // 4):
-                    gray[:, max(0, x - 6) :] = 255
-        if gray.shape[1] >= 30:
-            gray[horizontal, :] = 255
-            for y in np.flatnonzero(horizontal):
-                if y < min(12, gray.shape[0] // 4):
-                    gray[: y + 7, :] = 255
-                elif y >= gray.shape[0] - min(12, gray.shape[0] // 4):
-                    gray[max(0, y - 6) :, :] = 255
-        im = Image.fromarray(gray).resize(
-            (gray.shape[1] * self.scale, gray.shape[0] * self.scale),
-            Image.Resampling.LANCZOS,
-        )
-        border = 12
-        im = ImageOps.expand(im, border=border, fill="white")
-        buffer = io.BytesIO()
-        im.save(buffer, format="PNG")
+        from .legacy_ocr import recognize, NUMBER
+
         try:
-            result = subprocess.run(
-                [self.executable, "stdin", "stdout", "-l", "eng", "--psm", "6", "tsv"],
-                input=buffer.getvalue(),
-                capture_output=True,
-                timeout=self.timeout,
-                env=dict(os.environ, OMP_THREAD_LIMIT="1"),
-            )
+            words = recognize(image, self.executable, self.timeout, self.scale)
+            # Re-run only weak passes; do not merge competing preprocessing results.
+            numeric = [
+                w
+                for w in words
+                if NUMBER.fullmatch(w["text"]) and w["confidence"] >= 0.5
+            ]
+            if len(numeric) < 3:
+                cleaned = recognize(
+                    image, self.executable, self.timeout, self.scale, clean_rules=True
+                )
+                clean_numeric = [
+                    w
+                    for w in cleaned
+                    if NUMBER.fullmatch(w["text"]) and w["confidence"] >= 0.5
+                ]
+                if len(clean_numeric) > len(numeric):
+                    words = cleaned
         except FileNotFoundError as exc:
             raise DepthExtractionError(
-                "Tesseract is unavailable: install tesseract and English language "
-                "data, or pass a different OCRBackend to DepthExtractor."
+                "Tesseract is unavailable: install tesseract and English language data"
             ) from exc
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            raise DepthExtractionError(f"Tesseract execution failed: {exc}") from exc
-        if result.returncode:
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+            UnicodeError,
+            subprocess.TimeoutExpired,
+        ) as exc:
             raise DepthExtractionError(
-                "Tesseract failed: " + result.stderr.decode(errors="replace")[:500]
-            )
-        tokens = []
-        try:
-            rows = csv.DictReader(
-                io.StringIO(result.stdout.decode()),
-                delimiter="\t",
-                quoting=csv.QUOTE_NONE,
-            )
-            if not rows.fieldnames or not {
-                "text",
-                "conf",
-                "left",
-                "top",
-                "width",
-                "height",
-            }.issubset(rows.fieldnames):
-                raise ValueError("missing TSV columns")
-            for row in rows:
-                if not row["text"].strip():
-                    continue
-                x = (float(row["left"]) - border) / self.scale
-                y = (float(row["top"]) - border) / self.scale
-                tokens.append(
-                    OCRToken(
-                        row["text"].strip(),
-                        float(row["conf"]) / 100,
-                        (
-                            x,
-                            y,
-                            x + float(row["width"]) / self.scale,
-                            y + float(row["height"]) / self.scale,
-                        ),
-                    )
-                )
-        except (ValueError, KeyError, TypeError, UnicodeError) as exc:
-            raise DepthExtractionError("Invalid Tesseract TSV output") from exc
-        return tokens
+                f"Tesseract execution/output failed: {exc}"
+            ) from exc
+        return [OCRToken(w["text"], w["confidence"], w["box"]) for w in words]
 
 
 @dataclass(frozen=True)
@@ -132,6 +88,7 @@ class _Anchor:
     y: int
     depth: float
     confidence: float
+    text: str = ""
 
 
 _NUMBER = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", re.ASCII)
@@ -155,38 +112,9 @@ def _original_box(box, rotation, width, height):
 
 
 def _consensus(anchors, tolerance):
-    """Deterministic bounded pair hypotheses; keep observed values, not fitted ones."""
-    if len(anchors) < 3:
-        return []
-    ys = np.array([a.y for a in anchors], dtype=float)
-    ds = np.array([a.depth for a in anchors])
-    # At most 32 hypothesis points, all candidates still participate in scoring.
-    indices = np.unique(
-        np.linspace(0, len(anchors) - 1, min(32, len(anchors))).astype(int)
-    )
-    best_mask, best_score = None, None
-    for ii, i in enumerate(indices):
-        for j in indices[ii + 1 :]:
-            if ys[j] - ys[i] < 10:
-                continue
-            slope = (ds[j] - ds[i]) / (ys[j] - ys[i])
-            if slope <= 0 or not math.isfinite(slope):
-                continue
-            residual = np.abs((ds - ds[i]) / slope - (ys - ys[i]))
-            mask = residual <= tolerance
-            count = int(mask.sum())
-            if count < 3 or count / len(anchors) < 0.6:
-                continue
-            score = (count, float(np.ptp(ys[mask])), -float(np.median(residual[mask])))
-            if best_score is None or score > best_score:
-                best_mask, best_score = mask, score
-    if best_mask is None:
-        return []
-    # Preserve only strictly increasing observations for piecewise interpolation.
-    accepted = [a for a, keep in zip(anchors, best_mask) if keep]
-    if any(b.depth <= a.depth for a, b in zip(accepted, accepted[1:])):
-        return []
-    return accepted
+    from .legacy_ocr import supported_anchors
+
+    return supported_anchors(anchors, tolerance)
 
 
 class DepthExtractor:
@@ -310,7 +238,7 @@ class DepthExtractor:
                 if not (0 < x0 < x1 < width and 0 < y0 < y1 < height):
                     continue
                 y = origin + self._tick_y(gray, box)
-                found.append(_Anchor(y, value, token.confidence))
+                found.append(_Anchor(y, value, token.confidence, token.text.strip()))
         return found
 
     def extract_observations(
@@ -359,6 +287,7 @@ class DepthExtractor:
                 ),
                 a.depth,
                 a.confidence,
+                a.text,
             )
             for a in candidates
         ]

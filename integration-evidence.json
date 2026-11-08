@@ -1,0 +1,356 @@
+{
+  "scope": "offline diagnostics",
+  "python": "3.11.2 (main, Oct  7 2026, 12:35:07) [GCC 12.2.0]",
+  "compat": true,
+  "production_source_modified": false,
+  "checks": [
+    {
+      "name": "compile:src/__init__.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/__init__.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/__main__.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/extraction.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/legacy_ocr.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/staging.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/validation.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/depth/worker.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/dispatcher.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/__init__.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/annotation.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/classifier.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/export.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/features.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/intervals.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/legend.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/pipeline.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/task.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/text.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/lithology/types.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/redis_client.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/worker_depth.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/worker_lithology.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:src/worker_merge.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_atomic_recovery.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_audit_depth.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_depth_legacy_integration.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_depth_pending_recovery.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_end_to_end.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_pipeline_contract.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tests/test_recovery_merge.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "compile:tools/check_integration.py",
+      "passed": true,
+      "detail": "in-memory normalized"
+    },
+    {
+      "name": "original_bytes:src/dispatcher.py",
+      "passed": true,
+      "detail": {
+        "expected": "83491ab6924f75c01b16ab242f6e0674bcebd1096bb74f40464eae457280e28f",
+        "actual": "83491ab6924f75c01b16ab242f6e0674bcebd1096bb74f40464eae457280e28f"
+      }
+    },
+    {
+      "name": "original_bytes:compose.yaml",
+      "passed": true,
+      "detail": {
+        "expected": "13aaffe33877a06abfc34c87bfea2328640af77453c43dcff66537b20cdb16f4",
+        "actual": "13aaffe33877a06abfc34c87bfea2328640af77453c43dcff66537b20cdb16f4"
+      }
+    },
+    {
+      "name": "startup_invokes_recovery",
+      "passed": true,
+      "detail": "static AST assertion; not live Redis"
+    },
+    {
+      "name": "isolated_startup_recovery:LIVE",
+      "passed": true,
+      "detail": "interface doubles; no durability claim"
+    },
+    {
+      "name": "isolated_startup_recovery:BATCH",
+      "passed": true,
+      "detail": "interface doubles; no durability claim"
+    },
+    {
+      "name": "isolated_startup_recovery:IDLE",
+      "passed": true,
+      "detail": "interface doubles; no durability claim"
+    },
+    {
+      "name": "build_inputs:build/depth/Dockerfile",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "build_inputs:build/dispatcher/Dockerfile",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "build_inputs:build/lithology/Dockerfile",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "build_inputs:build/merger/Dockerfile",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "requirements:depth",
+      "passed": true,
+      "detail": {
+        "required": [
+          "imagecodecs",
+          "numpy",
+          "pillow",
+          "redis",
+          "tifffile",
+          "zarr"
+        ],
+        "declared": [
+          "imagecodecs",
+          "numpy",
+          "pillow",
+          "redis",
+          "tifffile",
+          "zarr"
+        ]
+      }
+    },
+    {
+      "name": "requirements:dispatcher",
+      "passed": true,
+      "detail": {
+        "required": [
+          "fastapi",
+          "pydantic",
+          "redis",
+          "uvicorn"
+        ],
+        "declared": [
+          "fastapi",
+          "pydantic",
+          "redis",
+          "uvicorn"
+        ]
+      }
+    },
+    {
+      "name": "requirements:lithology",
+      "passed": true,
+      "detail": {
+        "required": [
+          "numpy",
+          "pillow",
+          "rasterio",
+          "redis"
+        ],
+        "declared": [
+          "numpy",
+          "pillow",
+          "rasterio",
+          "redis"
+        ]
+      }
+    },
+    {
+      "name": "requirements:merger",
+      "passed": true,
+      "detail": {
+        "required": [
+          "numpy",
+          "pillow",
+          "rasterio",
+          "redis"
+        ],
+        "declared": [
+          "numpy",
+          "pillow",
+          "rasterio",
+          "redis"
+        ]
+      }
+    }
+  ],
+  "tests": {
+    "run": 73,
+    "failures": [],
+    "errors": [],
+    "skipped": [
+      {
+        "test": "test_real_tiff_window_roundtrip (test_pipeline_contract.PipelineContract.test_real_tiff_window_roundtrip)",
+        "reason": "rasterio unavailable; compatibility stubs are not TIFF evidence"
+      },
+      {
+        "test": "test_bad_key_type_has_no_partial_write_or_ack (test_atomic_recovery.RealRedisAtomicity.test_bad_key_type_has_no_partial_write_or_ack)",
+        "reason": "real Redis not configured; mocks are not Lua execution evidence"
+      },
+      {
+        "test": "test_claim_abandoned_and_retry_pending (test_atomic_recovery.RealRedisAtomicity.test_claim_abandoned_and_retry_pending)",
+        "reason": "real Redis not configured; mocks are not Lua execution evidence"
+      },
+      {
+        "test": "test_completed_replay_does_not_regress_state (test_atomic_recovery.RealRedisAtomicity.test_completed_replay_does_not_regress_state)",
+        "reason": "real Redis not configured; mocks are not Lua execution evidence"
+      },
+      {
+        "test": "test_lith_last_and_concurrent_replay (test_atomic_recovery.RealRedisAtomicity.test_lith_last_and_concurrent_replay)",
+        "reason": "real Redis not configured; mocks are not Lua execution evidence"
+      },
+      {
+        "test": "test_replay_and_depth_last_barrier_and_ack (test_atomic_recovery.RealRedisAtomicity.test_replay_and_depth_last_barrier_and_ack)",
+        "reason": "real Redis not configured; mocks are not Lua execution evidence"
+      },
+      {
+        "test": "test_unstaged_depth_and_missing_totals_remain_pending (test_atomic_recovery.RealRedisAtomicity.test_unstaged_depth_and_missing_totals_remain_pending)",
+        "reason": "real Redis not configured; mocks are not Lua execution evidence"
+      },
+      {
+        "test": "test_depth_status_membership_and_exact_replay (test_audit_depth.LiveDepthStaging.test_depth_status_membership_and_exact_replay)",
+        "reason": "real Redis not configured; static guards are not Lua execution evidence"
+      },
+      {
+        "test": "test_real_tesseract_rendered_scale (test_depth_legacy_integration.Integration.test_real_tesseract_rendered_scale)",
+        "reason": "Tesseract executable not installed"
+      },
+      {
+        "test": "test_live_ocr (test_end_to_end.EndToEnd.test_live_ocr)",
+        "reason": "Tesseract executable unavailable"
+      }
+    ],
+    "successful": true
+  },
+  "test_log": "test_depth_container_copy_sources_exist (test_pipeline_contract.PipelineContract.test_depth_container_copy_sources_exist) ... ok\ntest_depth_dependency_uses_actual_distribution_name (test_pipeline_contract.PipelineContract.test_depth_dependency_uses_actual_distribution_name) ... ok\ntest_global_half_open_feature_and_interval_bounds (test_pipeline_contract.PipelineContract.test_global_half_open_feature_and_interval_bounds) ... ok\ntest_identical_overlap_merges_and_conflicting_overlap_rejects (test_pipeline_contract.PipelineContract.test_identical_overlap_merges_and_conflicting_overlap_rejects) ... ok\ntest_no_anchors_must_not_become_pixel_depths (test_pipeline_contract.PipelineContract.test_no_anchors_must_not_become_pixel_depths) ... ok\ntest_nonmonotonic_short_span_anchors_must_reject (test_pipeline_contract.PipelineContract.test_nonmonotonic_short_span_anchors_must_reject) ... ok\ntest_one_anchor_must_not_invent_pitch (test_pipeline_contract.PipelineContract.test_one_anchor_must_not_invent_pitch) ... ok\ntest_payload_leading_zero_and_invalid_bounds (test_pipeline_contract.PipelineContract.test_payload_leading_zero_and_invalid_bounds) ... ok\ntest_real_swatch_features_classifier_injected_labels (test_pipeline_contract.PipelineContract.test_real_swatch_features_classifier_injected_labels) ... ok\ntest_real_tiff_window_roundtrip (test_pipeline_contract.PipelineContract.test_real_tiff_window_roundtrip) ... skipped 'rasterio unavailable; compatibility stubs are not TIFF evidence'\ntest_replayed_lith_task_must_not_append_again (test_pipeline_contract.PipelineContract.test_replayed_lith_task_must_not_append_again) ... ok\ntest_startup_recovery_still_called (test_pipeline_contract.PipelineContract.test_startup_recovery_still_called) ... ok\ntest_task_to_worker_to_csv_with_injected_io (test_pipeline_contract.PipelineContract.test_task_to_worker_to_csv_with_injected_io) ... ok\ntest_unbracketed_boundaries_must_not_extrapolate (test_pipeline_contract.PipelineContract.test_unbracketed_boundaries_must_not_extrapolate) ... ok\ntest_claim_cursor_and_redis62_response (test_atomic_recovery.CallContracts.test_claim_cursor_and_redis62_response) ... ok\ntest_eval_failure_never_acknowledges_separately (test_atomic_recovery.CallContracts.test_eval_failure_never_acknowledges_separately) ... ok\ntest_lith_worker_passes_rows_to_single_publication (test_atomic_recovery.CallContracts.test_lith_worker_passes_rows_to_single_publication) ... ok\ntest_nogroup_recreates_and_restarts_pending_recovery (test_atomic_recovery.CallContracts.test_nogroup_recreates_and_restarts_pending_recovery) ... ok\ntest_own_pending_then_claim_then_new_and_retry (test_atomic_recovery.CallContracts.test_own_pending_then_claim_then_new_and_retry) ... ok\ntest_publication_is_one_eval_not_separate_ack (test_atomic_recovery.CallContracts.test_publication_is_one_eval_not_separate_ack) ... ok\ntest_reject_missing_publication_and_invalid_json (test_atomic_recovery.CallContracts.test_reject_missing_publication_and_invalid_json) ... ok\ntest_bad_key_type_has_no_partial_write_or_ack (test_atomic_recovery.RealRedisAtomicity.test_bad_key_type_has_no_partial_write_or_ack) ... skipped 'real Redis not configured; mocks are not Lua execution evidence'\ntest_claim_abandoned_and_retry_pending (test_atomic_recovery.RealRedisAtomicity.test_claim_abandoned_and_retry_pending) ... skipped 'real Redis not configured; mocks are not Lua execution evidence'\ntest_completed_replay_does_not_regress_state (test_atomic_recovery.RealRedisAtomicity.test_completed_replay_does_not_regress_state) ... skipped 'real Redis not configured; mocks are not Lua execution evidence'\ntest_lith_last_and_concurrent_replay (test_atomic_recovery.RealRedisAtomicity.test_lith_last_and_concurrent_replay) ... skipped 'real Redis not configured; mocks are not Lua execution evidence'\ntest_replay_and_depth_last_barrier_and_ack (test_atomic_recovery.RealRedisAtomicity.test_replay_and_depth_last_barrier_and_ack) ... skipped 'real Redis not configured; mocks are not Lua execution evidence'\ntest_unstaged_depth_and_missing_totals_remain_pending (test_atomic_recovery.RealRedisAtomicity.test_unstaged_depth_and_missing_totals_remain_pending) ... skipped 'real Redis not configured; mocks are not Lua execution evidence'\ntest_competing_scales_rejected (test_audit_depth.GlobalSupport.test_competing_scales_rejected) ... ok\ntest_lua_guard_order_static_only (test_audit_depth.GlobalSupport.test_lua_guard_order_static_only) ... ok\ntest_three_anchors_and_unit_independent_slope (test_audit_depth.GlobalSupport.test_three_anchors_and_unit_independent_slope) ... ok\ntest_two_increasing_points_are_not_calibration (test_audit_depth.GlobalSupport.test_two_increasing_points_are_not_calibration) ... ok\ntest_unsupported_increasing_points_rejected (test_audit_depth.GlobalSupport.test_unsupported_increasing_points_rejected) ... ok\ntest_depth_status_membership_and_exact_replay (test_audit_depth.LiveDepthStaging.test_depth_status_membership_and_exact_replay) ... skipped 'real Redis not configured; static guards are not Lua execution evidence'\ntest_abbreviated_repetitions_not_expanded (test_depth_legacy_integration.Integration.test_abbreviated_repetitions_not_expanded) ... ok\ntest_atomic_failure (test_depth_legacy_integration.Integration.test_atomic_failure) ... ok\ntest_bounded_stream_and_width_guard (test_depth_legacy_integration.Integration.test_bounded_stream_and_width_guard) ... ok\ntest_competing_scales_rejected (test_depth_legacy_integration.Integration.test_competing_scales_rejected) ... ok\ntest_conflicts_and_clipping (test_depth_legacy_integration.Integration.test_conflicts_and_clipping) ... ok\ntest_declining_and_insufficient_support (test_depth_legacy_integration.Integration.test_declining_and_insufficient_support) ... ok\ntest_missing_and_malformed_ocr_wrapped (test_depth_legacy_integration.Integration.test_missing_and_malformed_ocr_wrapped) ... ok\ntest_mixed_numeric_scale_rejected (test_depth_legacy_integration.Integration.test_mixed_numeric_scale_rejected) ... ok\ntest_pixel_limit_before_subprocess (test_depth_legacy_integration.Integration.test_pixel_limit_before_subprocess) ... ok\ntest_real_tesseract_rendered_scale (test_depth_legacy_integration.Integration.test_real_tesseract_rendered_scale) ... skipped 'Tesseract executable not installed'\ntest_rotation_coordinates (test_depth_legacy_integration.Integration.test_rotation_coordinates) ... ok\ntest_stateless_single_label_and_no_state_change (test_depth_legacy_integration.Integration.test_stateless_single_label_and_no_state_change) ... ok\ntest_straight_rule_cleanup_preserves_short_glyphs (test_depth_legacy_integration.Integration.test_straight_rule_cleanup_preserves_short_glyphs) ... ok\ntest_stream_support_no_extrapolation_reset (test_depth_legacy_integration.Integration.test_stream_support_no_extrapolation_reset) ... ok\ntest_tsv_scale_padding_confidence (test_depth_legacy_integration.Integration.test_tsv_scale_padding_confidence) ... ok\ntest_abandoned_claim_before_new_and_minimum_idle (test_depth_pending_recovery.PendingRecovery.test_abandoned_claim_before_new_and_minimum_idle) ... ok\ntest_broker_claim_failure_not_swallowed (test_depth_pending_recovery.PendingRecovery.test_broker_claim_failure_not_swallowed) ... ok\ntest_failed_claim_remains_pending_and_retries_own (test_depth_pending_recovery.PendingRecovery.test_failed_claim_remains_pending_and_retries_own) ... ok\ntest_own_pending_before_claim_or_new (test_depth_pending_recovery.PendingRecovery.test_own_pending_before_claim_or_new) ... ok\ntest_poison_pending_cursor_advances_then_allows_new (test_depth_pending_recovery.PendingRecovery.test_poison_pending_cursor_advances_then_allows_new) ... ok\ntest_redis62_bounded_cursor_and_new_fallback (test_depth_pending_recovery.PendingRecovery.test_redis62_bounded_cursor_and_new_fallback) ... ok\ntest_empty_single_anchor_csv (test_end_to_end.EndToEnd.test_empty_single_anchor_csv) ... ok\ntest_exact_dispatcher_ownership (test_end_to_end.EndToEnd.test_exact_dispatcher_ownership) ... ok\ntest_finite_short_anchor_validation (test_end_to_end.EndToEnd.test_finite_short_anchor_validation) ... ok\ntest_image_csv_unsupported_endpoints_empty (test_end_to_end.EndToEnd.test_image_csv_unsupported_endpoints_empty) ... ok\ntest_image_lithology_integrated_depth_csv (test_end_to_end.EndToEnd.test_image_lithology_integrated_depth_csv) ... ok\ntest_live_ocr (test_end_to_end.EndToEnd.test_live_ocr) ... skipped 'Tesseract executable unavailable'\ntest_ack_loss_retry_does_not_reexport (test_recovery_merge.RecoveryMergeTests.test_ack_loss_retry_does_not_reexport) ... ok\ntest_conflicting_overlap_fails (test_recovery_merge.RecoveryMergeTests.test_conflicting_overlap_fails) ... ok\ntest_exact_unknown_retries_deduplicated (test_recovery_merge.RecoveryMergeTests.test_exact_unknown_retries_deduplicated) ... ok\ntest_failed_atomic_publish_keeps_previous_file (test_recovery_merge.RecoveryMergeTests.test_failed_atomic_publish_keeps_previous_file) ... ok\ntest_fractional_coordinate_not_silently_truncated (test_recovery_merge.RecoveryMergeTests.test_fractional_coordinate_not_silently_truncated) ... ok\ntest_global_coordinates_and_depth (test_recovery_merge.RecoveryMergeTests.test_global_coordinates_and_depth) ... ok\ntest_invalid_observed_depths_fail_and_stay_pending (test_recovery_merge.RecoveryMergeTests.test_invalid_observed_depths_fail_and_stay_pending) ... ok\ntest_missing_completed_file_regenerated (test_recovery_merge.RecoveryMergeTests.test_missing_completed_file_regenerated) ... ok\ntest_missing_single_anchor_completes_with_blank_depths (test_recovery_merge.RecoveryMergeTests.test_missing_single_anchor_completes_with_blank_depths) ... ok\ntest_run_failure_leaves_merging_pending (test_recovery_merge.RecoveryMergeTests.test_run_failure_leaves_merging_pending) ... Merge task '1' for log '0001' failed\nTraceback (most recent call last):\n  File \"/tmp/mofeed-py-bci3ir/work/w/src/worker_merge.py\", line 283, in run\n    self.process_merge_task(message_id, payload)\n  File \"/tmp/mofeed-py-bci3ir/work/w/src/worker_merge.py\", line 256, in process_merge_task\n    destination = self.export_merged_document(log_id)\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/mofeed-py-bci3ir/work/w/src/worker_merge.py\", line 191, in export_merged_document\n    ref_y, ref_depths = self.filter_monotonic_depth_points(depth_map)\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/mofeed-py-bci3ir/work/w/src/worker_merge.py\", line 87, in filter_monotonic_depth_points\n    raise ValueError(\"Depth anchors must have finite distinct coordinates and values\")\nValueError: Depth anchors must have finite distinct coordinates and values\nok\ntest_safe_filename (test_recovery_merge.RecoveryMergeTests.test_safe_filename) ... ok\ntest_touching_known_seams_stitched (test_recovery_merge.RecoveryMergeTests.test_touching_known_seams_stitched) ... ok\ntest_unsupported_global_boundaries_are_blank (test_recovery_merge.RecoveryMergeTests.test_unsupported_global_boundaries_are_blank) ... ok\n\n----------------------------------------------------------------------\nRan 73 tests in 0.125s\n\nOK (skipped=10)\n",
+  "overall_passed": true,
+  "not_executed": [
+    "docker compose build/up",
+    "native Python 3.15 run",
+    "real dataset end-to-end CSV accuracy and completion",
+    "process crash and AOF recovery"
+  ]
+}

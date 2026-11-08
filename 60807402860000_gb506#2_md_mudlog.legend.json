@@ -1,0 +1,168 @@
+{
+  "source_sha256": "336c16e8621e1cc1eab07b1a34df23e4e27f8b8d5aa8c4b361126a688939be00",
+  "source_image": "60807402860000_gb506#2_md_mudlog.tif",
+  "legend_crop_box": [
+    12,
+    596,
+    1525,
+    1003
+  ],
+  "entries": [
+    {
+      "id": "clay_shale",
+      "label": "Clay/Shale",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        42,
+        58,
+        94,
+        91
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "shale",
+      "label": "Shale",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        349,
+        58,
+        401,
+        91
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "siltstone",
+      "label": "Siltstone",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        657,
+        58,
+        708,
+        91
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "sandstone",
+      "label": "Sandstone",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        963,
+        58,
+        1014,
+        91
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "chert",
+      "label": "Chert",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        1271,
+        58,
+        1321,
+        91
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "limestone",
+      "label": "Limestone",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        42,
+        121,
+        94,
+        154
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "dolomite",
+      "label": "Dolomite",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        349,
+        121,
+        401,
+        154
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "halite",
+      "label": "Halite",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        657,
+        121,
+        708,
+        154
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "anhydrite",
+      "label": "Anhydrite",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        963,
+        121,
+        1014,
+        154
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "gypsum",
+      "label": "Gypsum",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        1271,
+        121,
+        1321,
+        154
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "plastic_clay",
+      "label": "Plastic Clay",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        1271,
+        245,
+        1321,
+        278
+      ],
+      "kind": "lithology",
+      "verified": true
+    },
+    {
+      "id": "diatomite",
+      "label": "Diatomite",
+      "image": "60807402860000_gb506#2_md_mudlog.legend.png",
+      "box": [
+        1271,
+        308,
+        1321,
+        340
+      ],
+      "kind": "lithology",
+      "verified": true
+    }
+  ]
+}

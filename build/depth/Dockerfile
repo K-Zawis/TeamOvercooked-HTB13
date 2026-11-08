@@ -14,9 +14,8 @@ RUN apt-get update \
         tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /app/requirements.txt
-COPY build/depth/requirements.txt /app/build/depth/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/build/depth/requirements.txt
+COPY build/depth/requirements.txt /app/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/requirements.txt
 
 COPY src/ /app/src/
 

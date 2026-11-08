@@ -40,7 +40,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./scripts:/app/scripts
-      - ./dataset:/data:ro
+      - ../dataset:/data:ro
       - ./output:/output
     networks:
       well_log_net:
@@ -73,7 +73,7 @@ services:
       - DATA_DIR=/data
     volumes:
       - ./src:/app/src
-      - ./dataset:/data:ro
+      - ../dataset:/data:ro
     networks:
       well_log_net:
         ipv4_address: 172.28.0.30
@@ -94,7 +94,7 @@ services:
       - DATA_DIR=/data
     volumes:
       - ./src:/app/src
-      - ./dataset:/data:ro
+      - ../dataset:/data:ro
     networks:
       well_log_net:
         ipv4_address: 172.28.0.20
@@ -115,7 +115,7 @@ services:
       - OUTPUT_DIR=/output
     volumes:
       - ./src:/app/src
-      - ./dataset:/data:ro
+      - ../dataset:/data:ro
       - ./output:/output
     networks:
       well_log_net:
@@ -123,6 +123,25 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  centre-classifier:
+    build:
+      context: ./centre-classifier
+    image: well_log_centre_classifier
+    container_name: well_log_centre_classifier
+    restart: unless-stopped
+    environment:
+      - DATA_DIR=/data
+      - OUTPUT_DIR=/output
+      - LEGEND_DIR=/legends
+    volumes:
+      - ../dataset:/data:ro
+      - ./output:/output
+      - ${CENTRE_LEGEND_DIR:-.}:/legends:ro
+    network_mode: none
+    depends_on:
+      merger:
+        condition: service_started
 
 networks:
   well_log_net:
