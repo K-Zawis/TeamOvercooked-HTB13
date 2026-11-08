@@ -43,8 +43,8 @@ export interface Health {
 }
 
 /**
- * One row of the CSV. While a log is still running the server may return the beds found so far;
- * depths are null until enough depth markers have been read.
+ * One row of the merger's CSV. It only exists once the merger has finished the log; depths can be
+ * null when too few depth markers were read.
  */
 export interface Interval {
   top_depth: number | null;
@@ -75,7 +75,9 @@ export interface Api {
   startBatch: (batchSize?: number) => Promise<unknown>;
   reset: (force: boolean) => Promise<unknown>;
   reconcile: () => Promise<unknown>;
-  /** CSV rows (partial while running), or null when the log has none yet. */
+  /** Log IDs found in the dataset folder, read by the Vite server (empty if unavailable). */
+  logFiles: () => Promise<string[]>;
+  /** CSV rows, or null when the merger has not written this log yet. */
   intervals: (logId: string) => Promise<Interval[] | null>;
 }
 
@@ -99,6 +101,15 @@ function http(base: string): Api {
     startBatch: (batch_size) => call("/batch/start", batch_size === undefined ? {} : { batch_size }),
     reset: (force) => call("/reset", { force }),
     reconcile: () => call("/batch/reconcile", {}),
+    logFiles: async () => {
+      try {
+        const res = await fetch(`/local/logs`);
+        const data = res.ok ? await res.json() : [];
+        return Array.isArray(data) ? data.map(String) : [];
+      } catch {
+        return [];
+      }
+    },
     intervals: async (id) => {
       const res = await fetch(`${base}/api/logs/${encodeURIComponent(id)}/intervals`);
       // 404 / 409: the merger has not written this log's CSV (or the route is not deployed yet).
@@ -110,26 +121,57 @@ function http(base: string): Api {
   };
 }
 
+/** Splits CSV text into rows of cells. Handles quoted cells (commas, doubled quotes, newlines). */
+export function splitCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  const endRow = () => {
+    row.push(cell);
+    cell = "";
+    if (row.some((x) => x !== "")) rows.push(row);
+    row = [];
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      endRow();
+    } else cell += c;
+  }
+  endRow();
+  return rows;
+}
+
 /** Rows of the merger's CSV: top_depth,bottom_depth,lithology,confidence,top_y,bottom_y,cluster_id */
 function parseCsv(text: string): Interval[] {
-  const [head, ...lines] = text.trim().split(/\r?\n/);
-  const cols = head.split(",").map((c) => c.trim());
-  const num = (v: string | undefined) => (v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
-  return lines
-    .filter(Boolean)
-    .map((line) => {
-      const cells = line.split(",");
-      const get = (name: string) => cells[cols.indexOf(name)];
-      return {
-        top_depth: num(get("top_depth")),
-        bottom_depth: num(get("bottom_depth")),
-        lithology: get("lithology") ?? "",
-        top_y: Number(get("top_y")),
-        bottom_y: Number(get("bottom_y")),
-        cluster_id: get("cluster_id") ?? "",
-        confidence: num(get("confidence")),
-      };
-    });
+  const [head, ...lines] = splitCsv(text);
+  if (!head) return [];
+  const cols = head.map((c) => c.trim());
+  const num = (v: string | undefined) => (v === undefined || v.trim() === "" || Number.isNaN(Number(v)) ? null : Number(v));
+  return lines.map((cells) => {
+    const get = (name: string) => cells[cols.indexOf(name)];
+    return {
+      top_depth: num(get("top_depth")),
+      bottom_depth: num(get("bottom_depth")),
+      lithology: get("lithology") ?? "",
+      top_y: Number(get("top_y")),
+      bottom_y: Number(get("bottom_y")),
+      cluster_id: get("cluster_id") ?? "",
+      confidence: num(get("confidence")),
+    };
+  });
 }
 
 /**

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, type Doc, type Interval, type Status } from "./api";
 import { HoverCard, LithColumn, type BedHover } from "./Column";
+import { GeoMap } from "./GeoMap";
 import { HatchDefs } from "./Hatch";
-import { ft, normLith } from "./lith";
+import { FALLBACK_STYLE, buildStyles, ft, normLith, rockType } from "./lith";
 import { usePipeline } from "./usePipeline";
 
 const STATUSES = ["PENDING", "PROCESSING", "MERGING", "COMPLETED", "FAILED", "CORRUPTED"];
@@ -65,6 +66,12 @@ function RunControls({ status, onDone }: { status: Status | null; onDone: () => 
   const [confirm, setConfirm] = useState(false);
   const [msg, setMsg] = useState<Msg>(null);
   const busy = !!status && (status.is_running || status.mode.toUpperCase() !== "IDLE");
+  const [logs, setLogs] = useState<string[]>([]);
+  useEffect(() => {
+    api.logFiles().then(setLogs);
+  }, []);
+  const needle = file.trim().toLowerCase();
+  const shown = needle ? logs.filter((id) => id.toLowerCase().includes(needle)) : logs;
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
     try {
@@ -80,7 +87,20 @@ function RunControls({ status, onDone }: { status: Status | null; onDone: () => 
   return (
     <div className="group">
       <div className="gh">Run</div>
-      <input value={file} onChange={(e) => setFile(e.target.value)} placeholder="File (blank = demo file)" disabled={busy} />
+      <input value={file} onChange={(e) => setFile(e.target.value)} placeholder="Log ID or file name" disabled={busy} />
+      <p className="hint">Enter a file ID or part of the file name.</p>
+      {logs.length > 0 && (
+        <ul className="list files" aria-label="Logs in the dataset">
+          {shown.map((id) => (
+            <li key={id}>
+              <button type="button" className={`mono ${id === file ? "on" : ""}`} title={id} disabled={busy} onClick={() => setFile(id)}>
+                {id}
+              </button>
+            </li>
+          ))}
+          {shown.length === 0 && <li className="none">no match</li>}
+        </ul>
+      )}
       <button className="btn" disabled={busy} onClick={() => run("Live run started", () => api.startLive(file.trim() || undefined))}>
         Start live run
       </button>
@@ -167,8 +187,12 @@ function LogsTable({ docs, selected, onSelect, active }: { docs: Doc[]; selected
 
 /* ---------------- result view ---------------- */
 
+const q = (v: unknown) => {
+  const t = String(v ?? "");
+  return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+};
 const csvOf = (rows: Interval[]) =>
-  ["top_depth,bottom_depth,lithology,confidence,top_y,bottom_y,cluster_id", ...rows.map((r) => `${r.top_depth ?? ""},${r.bottom_depth ?? ""},${r.lithology},${r.confidence ?? ""},${r.top_y},${r.bottom_y},${r.cluster_id}`)].join("\n") + "\n";
+  ["top_depth,bottom_depth,lithology,confidence,top_y,bottom_y,cluster_id", ...rows.map((r) => [r.top_depth, r.bottom_depth, r.lithology, r.confidence, r.top_y, r.bottom_y, r.cluster_id].map(q).join(","))].join("\n") + "\n";
 
 function download(name: string, text: string) {
   const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
@@ -177,7 +201,7 @@ function download(name: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
-function ResultView({ doc }: { doc: Doc | undefined }) {
+function ResultView({ doc, onRock }: { doc: Doc | undefined; onRock: (rock: string | null) => void }) {
   const [rows, setRows] = useState<Interval[]>([]);
   const [hover, setHover] = useState<BedHover | null>(null);
   const [rowHover, setRowHover] = useState<number | null>(null);
@@ -188,7 +212,7 @@ function ResultView({ doc }: { doc: Doc | undefined }) {
   const done = /complete/i.test(status);
   const chunks = doc ? `${doc.depth_progress}|${doc.lith_progress}` : "";
 
-  // Beds: partial while the log runs (refetched whenever a chunk completes), final once it is done.
+  // The merger writes the CSV once, when it finishes the log, so there is nothing partial to show before that.
   useEffect(() => {
     setFailed(false);
     if (!id || !(live || done)) return setRows([]);
@@ -208,6 +232,13 @@ function ResultView({ doc }: { doc: Doc | undefined }) {
 
   useEffect(() => setHover(null), [id]);
 
+  const hoverIdx = hover?.idx ?? rowHover;
+  const bedRock = hoverIdx != null ? rockType(rows[hoverIdx]?.lithology) : null;
+  useEffect(() => {
+    onRock(bedRock);
+    return () => onRock(null);
+  }, [bedRock, onRock]);
+
   if (!doc)
     return (
       <section className="panel result">
@@ -215,8 +246,8 @@ function ResultView({ doc }: { doc: Doc | undefined }) {
       </section>
     );
 
-  const hoverIdx = hover?.idx ?? rowHover;
   const bed = hoverIdx != null ? rows[hoverIdx] : undefined;
+  const styles = buildStyles(rows.map((r) => r.lithology));
 
   return (
     <section className="panel result">
@@ -234,9 +265,9 @@ function ResultView({ doc }: { doc: Doc | undefined }) {
       </div>
       <div className="rbody">
         <div className="colbox">
-          <LithColumn rows={rows} hoverLith={bed?.lithology ?? null} selected={hoverIdx} onHover={setHover} />
-          {live && <div className="tag">Filling in as chunks complete</div>}
-          <HoverCard bed={bed} />
+          <LithColumn rows={rows} styles={styles} hoverLith={bed?.lithology ?? null} selected={hoverIdx} onHover={setHover} />
+          {live && <div className="tag">Intervals appear when the merger finishes</div>}
+          <HoverCard rows={rows} idx={hoverIdx} styles={styles} />
         </div>
         <div className="intervals">
           <div className="ihead">
@@ -265,7 +296,10 @@ function ResultView({ doc }: { doc: Doc | undefined }) {
                   <tr key={i} className={hoverIdx === i ? "sel" : ""} onMouseEnter={() => setRowHover(i)}>
                     <td className="num">{ft(r.top_depth, 2)}</td>
                     <td className="num">{ft(r.bottom_depth, 2)}</td>
-                    <td>{r.lithology}</td>
+                    <td>
+                      <i className="sw" style={{ background: (styles.get(r.lithology) ?? FALLBACK_STYLE).color }} />
+                      {r.lithology}
+                    </td>
                     <td className="num">{r.confidence != null ? r.confidence.toFixed(2) : "—"}</td>
                     <td className="num">{r.top_y}</td>
                     <td className="num">{r.bottom_y}</td>
@@ -278,7 +312,7 @@ function ResultView({ doc }: { doc: Doc | undefined }) {
                       {failed
                         ? "Could not load intervals from the API."
                         : live
-                          ? "Waiting for the first lithology chunk…"
+                          ? "Waiting for the merger to write this log's intervals…"
                           : done
                             ? "No intervals yet: the merger has not written this log's CSV to the output folder."
                             : "Intervals appear as this log is processed."}
@@ -300,7 +334,9 @@ export default function App() {
   const { health, status, dash, offline, refresh } = usePipeline();
   const [hiddenStatus, setHiddenStatus] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
-
+  const [bedRock, setBedRock] = useState<string | null>(null);
+  const [legendRock, setLegendRock] = useState<string | null>(null);
+  const hoverRock = legendRock ?? bedRock;
   const mode = (status?.mode ?? dash?.pipeline_state.mode ?? "").toUpperCase();
   const all = dash?.documents ?? [];
   const active = useMemo(() => new Set(status?.active_logs ?? []), [status]);
@@ -349,8 +385,6 @@ export default function App() {
     <div className="app">
       <HatchDefs />
       <header className="top">
-        <strong>StrataFlow</strong>
-        <span>Lithology pipeline</span>
         <span className="sp" />
         <span className={offline || health === "down" ? "bad" : ""}>
           Redis: {offline ? "API unreachable" : health === "down" ? "unreachable" : redisOk ? "connected" : "checking…"}
@@ -379,11 +413,17 @@ export default function App() {
 
         <main className="page">
           {offline && !dash ? (
-            <div className="nodata big">Cannot reach the API ({api.label}). Check that the server is running and that CORS allows this origin.</div>
+            <div className="nodata big">Cannot reach the API ({api.label}). Check that the dispatcher is running.</div>
           ) : (
             <>
+              <ResultView doc={all.find((d) => d.log_id === selected)} onRock={setBedRock} />
               <LogsTable docs={docs} selected={selected} onSelect={setSelected} active={active} />
-              <ResultView doc={all.find((d) => d.log_id === selected)} />
+              <section className="panel mapbox">
+                <div className="rhead">
+                  <h3>Where each rock type was logged</h3>
+                </div>
+                <GeoMap hoverRock={hoverRock} setLegendRock={setLegendRock} selected={selected} onSelect={setSelected} />
+              </section>
             </>
           )}
         </main>

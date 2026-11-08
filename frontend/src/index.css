@@ -31,11 +31,11 @@
   body,
   #root {
     width: 100%;
-    height: 100%;
+    min-height: 100%;
     margin: 0;
   }
   body {
-    overflow: hidden;
+    overflow-x: hidden;
     background: var(--bg);
     color: var(--ink);
     font-size: 13px;
@@ -82,12 +82,10 @@
   }
 
   .app {
-    width: 100vw;
-    height: 100vh;
-    min-height: 520px;
+    width: 100%;
+    min-height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
   }
   .top {
     height: 30px;
@@ -112,12 +110,16 @@
   }
   .body {
     flex: 1;
-    min-height: 0;
     display: flex;
+    align-items: flex-start;
   }
 
   /* ---------- left column ---------- */
   .side {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    max-height: 100vh;
     width: 208px;
     flex: none;
     display: flex;
@@ -183,6 +185,38 @@
   .msg {
     font-size: 12px;
   }
+  .hint {
+    margin: 0;
+    color: var(--mute);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .list.files {
+    max-height: 150px;
+    padding: 2px 0;
+  }
+  .list.files button {
+    display: block;
+    width: 100%;
+    padding: 2px 6px;
+    overflow: hidden;
+    border: 0;
+    background: none;
+    color: #cfcfcf;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .list.files button:hover:not(:disabled) {
+    background: #2e3338;
+  }
+  .list.files button.on {
+    background: #2f4357;
+    color: #fff;
+  }
+  .list.files .none {
+    padding: 2px 6px;
+  }
   .msg.ok {
     color: #7fcf9d;
   }
@@ -247,12 +281,24 @@
   .page {
     flex: 1;
     min-width: 0;
-    min-height: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.6fr);
-    gap: 6px;
-    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
     background: var(--bg);
+  }
+  /* Each section gets a comfortable fixed height; the page scrolls between them. */
+  .page .logs {
+    flex: none;
+    height: 280px;
+  }
+  .page .mapbox {
+    flex: none;
+    height: 460px;
+  }
+  .page .result {
+    flex: none;
+    height: 540px;
   }
   .panel {
     min-width: 0;
@@ -388,7 +434,7 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: 440px minmax(0, 1fr);
+    grid-template-columns: 480px minmax(0, 1fr);
     border-top: 1px solid var(--line);
   }
   .colbox {
@@ -477,6 +523,8 @@
     flex-direction: column;
   }
   .side {
+    position: static;
+    max-height: none;
     width: auto;
     flex-direction: row;
     flex-wrap: wrap;
@@ -572,6 +620,111 @@
   }
   .colbox .colwrap {
     flex: none;
-    width: 208px;
+    width: 252px;
+  }
+  .sw {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    margin-right: 7px;
+    border-radius: 2px;
+  }
+  .infopane .gh {
+    margin: 4px 0 6px;
+  }
+}
+
+/* ---------- map ---------- */
+@layer components {
+  /* The wrapper only groups the table and the map in the JSX; its children flow in .page. */
+  .leftcol {
+    display: contents;
+  }
+  .mapbox .rhead {
+    padding: 10px 14px;
+  }
+  .geo {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--line);
+  }
+  .geobar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    background: #202020;
+  }
+  .rocks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .lrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    border: 1px solid var(--line);
+    background: #1a1a1a;
+    font-size: 12.5px;
+    cursor: default;
+  }
+  .lrow.on {
+    border-color: var(--btn-line);
+    background: #2f4357;
+  }
+  .lrow small {
+    color: var(--mute);
+    font-size: 11px;
+  }
+  .areas {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    color: var(--mute);
+    font-size: 12px;
+  }
+  .areas button {
+    height: 26px;
+    min-width: 26px;
+    padding: 0 11px;
+    border: 1px solid var(--line);
+    background: #1a1a1a;
+    font-size: 12px;
+  }
+  .areas button:hover {
+    border-color: var(--btn-line);
+  }
+  .areas button.on {
+    border-color: var(--btn-line);
+    background: var(--btn);
+    color: #fff;
+  }
+  .maptag {
+    color: var(--amber);
+    font-size: 11px;
+  }
+  .geowrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #161616;
+  }
+  .geowrap > svg {
+    display: block;
+    cursor: grab;
+    touch-action: none;
+  }
+  .geowrap > svg.grab {
+    cursor: grabbing;
+  }
+  .pt {
+    cursor: pointer;
   }
 }
