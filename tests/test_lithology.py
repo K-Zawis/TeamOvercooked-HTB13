@@ -2,6 +2,8 @@ import csv
 
 import numpy as np
 import pytest
+import rasterio
+import tifffile
 from PIL import Image
 
 from src.lithology import (
@@ -21,6 +23,7 @@ from src.lithology import (
     merge_intervals,
     read_legend,
     process_lithology_task,
+    read_task_images,
     restrict_intervals,
     TextToken,
     write_intervals,
@@ -358,7 +361,7 @@ def test_lithology_task_validation(tmp_path, change):
 def test_process_lithology_task_returns_listener_handoff(tmp_path, monkeypatch):
     image = np.full((300, 130, 3), 255, np.uint8)
     path = tmp_path / "image.tif"
-    Image.fromarray(image).save(path)
+    tifffile.imwrite(path, image, photometric="rgb", rowsperstrip=16)
     payload = {
         "log_id": "0000000009",
         "image_path": str(path),
@@ -369,11 +372,20 @@ def test_process_lithology_task_returns_listener_handoff(tmp_path, monkeypatch):
     }
     legend = build_legend({"Shale": pattern("horizontal")})
     cache = {("0000000009", str(path), (5, 5, 65, 70)): legend}
+    read_images = read_task_images
+    include_legend = []
+
+    def record_read(task, **kwargs):
+        include_legend.append(kwargs["include_legend"])
+        return read_images(task, **kwargs)
+
+    monkeypatch.setattr("src.lithology.task.read_task_images", record_read)
     monkeypatch.setattr("src.lithology.task.analyze_lithology", lambda *args, **kwargs: [
         LithologyInterval(80, 160, "Shale", 0.9, "cluster_0"),
         LithologyInterval(160, 240, "Shale", 0.8, "cluster_0"),
     ])
     result = process_lithology_task(payload, legend_cache=cache)
+    assert include_legend == [False]
     assert result.to_dict() == {
         "log_id": "0000000009",
         "y_start": 80,
@@ -387,3 +399,53 @@ def test_process_lithology_task_returns_listener_handoff(tmp_path, monkeypatch):
             "confidence": 0.8,
         }],
     }
+
+
+def test_task_images_are_read_as_tiff_windows(tmp_path, monkeypatch):
+    yy, xx = np.indices((2300, 130))
+    image = np.stack((yy % 256, xx % 256, (yy + xx) % 256), axis=2).astype(np.uint8)
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, image, photometric="rgb", rowsperstrip=16)
+    task = LithologyTask.from_payload({
+        "log_id": "0000000009",
+        "image_path": str(path),
+        "column_bbox": [70, 80, 110, 2200],
+        "legend_bbox": [5, 5, 65, 70],
+        "y_start": 100,
+        "y_end": 2100,
+    })
+
+    opened = rasterio.open
+    windows = []
+
+    class RecordingDataset:
+        def __init__(self, dataset):
+            self._dataset = dataset
+
+        def __getattr__(self, name):
+            return getattr(self._dataset, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self._dataset.close()
+
+        def read(self, *args, **kwargs):
+            windows.append(kwargs.get("window"))
+            assert kwargs.get("window") is not None
+            return self._dataset.read(*args, **kwargs)
+
+    monkeypatch.setattr(
+        rasterio,
+        "open",
+        lambda *args, **kwargs: RecordingDataset(opened(*args, **kwargs)),
+    )
+    column, legend_image = read_task_images(task)
+
+    np.testing.assert_array_equal(column, image[100:2100, 70:110])
+    np.testing.assert_array_equal(legend_image, image[5:70, 5:65])
+    assert [(item.col_off, item.row_off, item.width, item.height) for item in windows] == [
+        (70, 100, 40, 2000),
+        (5, 5, 60, 65),
+    ]

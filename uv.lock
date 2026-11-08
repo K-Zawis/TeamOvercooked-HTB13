@@ -536,6 +536,7 @@ dependencies = [
     { name = "pillow" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "rasterio" },
     { name = "redis" },
     { name = "tifffile" },
     { name = "uvicorn" },
@@ -546,7 +547,6 @@ dependencies = [
 dev = [
     { name = "fakeredis", extra = ["lua"] },
     { name = "pytest" },
-    { name = "rasterio" },
 ]
 
 [package.metadata]
@@ -557,6 +557,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.1" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.10" },
+    { name = "rasterio", specifier = ">=1.3" },
     { name = "redis", specifier = ">=5" },
     { name = "tifffile", specifier = ">=2025.5.21" },
     { name = "uvicorn", specifier = ">=0.34" },
@@ -567,7 +568,6 @@ requires-dist = [
 dev = [
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.26" },
     { name = "pytest", specifier = ">=7" },
-    { name = "rasterio", specifier = ">=1.3" },
 ]
 
 [[package]]
