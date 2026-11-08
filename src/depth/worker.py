@@ -312,10 +312,15 @@ class DepthWorker:
         return True
 
     def run_forever(self):
+        idle = False
         try:
             while True:
                 try:
-                    self.run_once()
+                    if self.run_once():
+                        idle = False
+                    elif not idle:
+                        logger.info("No depth tasks available; waiting for the next batch.")
+                        idle = True
                 except Exception:
                     # Failed/poison messages stay pending. Back off; recovery and
                     # dead-letter policy belong to the eventual broker adapter.

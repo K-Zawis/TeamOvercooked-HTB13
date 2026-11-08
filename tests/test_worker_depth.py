@@ -603,13 +603,15 @@ def test_invalid_strip_height_rejected_before_opening_or_redis(image_path, heigh
     assert client.r.dbsize() == 0
 
 
-def test_run_forever_continues_polling_when_idle_and_backs_off_on_error():
+def test_run_forever_continues_polling_when_idle_and_backs_off_on_error(caplog):
     worker = DepthWorker(make_client(), FakeExtractor())
-    with patch.object(worker, "run_once", side_effect=[False, RuntimeError("Redis unavailable"), True, KeyboardInterrupt]) as poll:
+    caplog.set_level("INFO", logger="src.depth.worker")
+    with patch.object(worker, "run_once", side_effect=[False, False, RuntimeError("Redis unavailable"), True, False, False, KeyboardInterrupt]) as poll:
         with patch("src.depth.worker.time.sleep") as sleep:
             worker.run_forever()
-    assert poll.call_count == 4
+    assert poll.call_count == 7
     sleep.assert_called_once_with(1)
+    assert caplog.messages.count("No depth tasks available; waiting for the next batch.") == 2
 
 
 def test_pipeline_completion_records_recovery_slice_and_triggers_merge(image_path):
