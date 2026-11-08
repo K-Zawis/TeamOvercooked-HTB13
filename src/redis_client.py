@@ -14,6 +14,7 @@ class LogStatus(str, Enum):
     MERGING = "MERGING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CORRUPTED = "CORRUPTED"
 
 
 class PipelineRedisClient:
@@ -27,6 +28,8 @@ class PipelineRedisClient:
     GROUP_DEPTH = "group:depth_workers"
     GROUP_LITH = "group:lith_workers"
     GROUP_MERGE = "group:merger"
+
+    KEY_PIPELINE_STATE = "pipeline:state"
 
     def __init__(
         self,
@@ -67,6 +70,57 @@ class PipelineRedisClient:
             except redis.exceptions.ResponseError as e:
                 if "BUSYGROUP" not in str(e):
                     raise e
+
+    # -------------------------------------------------------------------------
+    # PERSISTENT PIPELINE ORCHESTRATION STATE
+    # -------------------------------------------------------------------------
+
+    def save_pipeline_state(
+        self,
+        mode: str,
+        is_running: bool,
+        current_batch: int,
+        total_batches: int,
+        batch_size: int,
+        target_file: Optional[str] = None,
+    ) -> None:
+        """Stores global orchestrator execution parameters into Redis."""
+        self.r.hset(
+            self.KEY_PIPELINE_STATE,
+            mapping={
+                "mode": mode,
+                "is_running": "1" if is_running else "0",
+                "current_batch": current_batch,
+                "total_batches": total_batches,
+                "batch_size": batch_size,
+                "target_file": target_file or "",
+            },
+        )
+
+    def get_pipeline_state(self) -> Dict[str, Any]:
+        """Recovers global orchestrator execution state from Redis."""
+        state = self.r.hgetall(self.KEY_PIPELINE_STATE)
+        if not state:
+            return {
+                "mode": "IDLE",
+                "is_running": False,
+                "current_batch": 0,
+                "total_batches": 0,
+                "batch_size": 5,
+                "target_file": None,
+            }
+        return {
+            "mode": state.get("mode", "IDLE"),
+            "is_running": state.get("is_running") == "1",
+            "current_batch": int(state.get("current_batch", 0)),
+            "total_batches": int(state.get("total_batches", 0)),
+            "batch_size": int(state.get("batch_size", 5)),
+            "target_file": state.get("target_file") or None,
+        }
+
+    def clear_pipeline_state(self) -> None:
+        """Resets the global orchestrator state back to IDLE."""
+        self.save_pipeline_state("IDLE", False, 0, 0, 5, None)
 
     # -------------------------------------------------------------------------
     # TASK PRODUCERS (Dispatcher & Barrier Engine)
@@ -403,7 +457,7 @@ class PipelineRedisClient:
         return self.r.hgetall(f"log:{log_id}:legend")
 
     # -------------------------------------------------------------------------
-    # LIFECYCLE, METADATA & PROGRESS TRACKING
+    # LIFECYCLE, METADATA & INTEGRITY CHECKING
     # -------------------------------------------------------------------------
 
     def set_document_meta(
@@ -412,6 +466,8 @@ class PipelineRedisClient:
         total_depth: int,
         total_lith: int,
         image_name: str,
+        image_sha256: str,
+        json_sha256: str,
         status: LogStatus = LogStatus.PROCESSING,
     ) -> None:
         """Initializes metadata and target chunk completion goals for a dispatched document.
@@ -427,6 +483,8 @@ class PipelineRedisClient:
             f"log:{log_id}:meta",
             mapping={
                 "image_name": image_name,
+                "image_sha256": image_sha256,
+                "json_sha256": json_sha256,
                 "total_depth_chunks": total_depth,
                 "completed_depth_chunks": 0,
                 "total_lith_chunks": total_lith,
@@ -450,12 +508,53 @@ class PipelineRedisClient:
             return {}
         return {
             "image_name": meta.get("image_name"),
+            "image_sha256": meta.get("image_sha256"),
+            "json_sha256": meta.get("json_sha256"),
             "total_depth_chunks": int(meta.get("total_depth_chunks", 0)),
             "completed_depth_chunks": int(meta.get("completed_depth_chunks", 0)),
             "total_lith_chunks": int(meta.get("total_lith_chunks", 0)),
             "completed_lith_chunks": int(meta.get("completed_lith_chunks", 0)),
             "status": LogStatus(meta.get("status", LogStatus.PENDING.value)),
         }
+
+    def validate_data_integrity(
+        self,
+        log_id: str,
+        current_image_sha: str,
+        current_json_sha: str,
+    ) -> Tuple[bool, str]:
+        """Validates that recorded file fingerprints and counter bounds match Redis metadata."""
+        meta = self.get_document_meta(log_id)
+        if not meta:
+            return False, "No metadata record found in Redis"
+
+        recorded_img = meta.get("image_sha256")
+        recorded_json = meta.get("json_sha256")
+
+        if recorded_img and recorded_img != current_image_sha:
+            return (
+                False,
+                f"Image SHA256 mismatch: recorded={recorded_img[:8]} current={current_image_sha[:8]}",
+            )
+
+        if recorded_json and recorded_json != current_json_sha:
+            return (
+                False,
+                f"Annotation JSON SHA256 mismatch: recorded={recorded_json[:8]} current={current_json_sha[:8]}",
+            )
+
+        d_done = meta["completed_depth_chunks"]
+        d_total = meta["total_depth_chunks"]
+        l_done = meta["completed_lith_chunks"]
+        l_total = meta["total_lith_chunks"]
+
+        if d_done > d_total or l_done > l_total:
+            return (
+                False,
+                f"Chunk bound overflow: depth={d_done}/{d_total}, lith={l_done}/{l_total}",
+            )
+
+        return True, "OK"
 
     def set_document_status(self, log_id: str, status: LogStatus) -> None:
         """Updates the operational processing lifecycle stage of a document and broadcasts an event.
@@ -522,6 +621,8 @@ class PipelineRedisClient:
             log_id = key.split(":")[1]
             results[log_id] = {
                 "image_name": meta.get("image_name"),
+                "image_sha256": meta.get("image_sha256"),
+                "json_sha256": meta.get("json_sha256"),
                 "total_depth_chunks": int(meta.get("total_depth_chunks", 0)),
                 "completed_depth_chunks": int(meta.get("completed_depth_chunks", 0)),
                 "total_lith_chunks": int(meta.get("total_lith_chunks", 0)),
@@ -625,9 +726,10 @@ class PipelineRedisClient:
             bool: True if document status is MERGING or COMPLETED, False otherwise.
         """
         status = self.get_document_status(log_id)
-        return status in (LogStatus.MERGING, LogStatus.COMPLETED)
+        return status == LogStatus.COMPLETED
 
     def flush_all(self) -> None:
         """Flushes the active Redis database and recreates all required consumer groups."""
         self.r.flushdb()
         self.init_consumer_groups()
+        self.clear_pipeline_state()
